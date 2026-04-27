@@ -1,81 +1,71 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { viewerId } from "./room";
 
-// Subscribes to /api/room/:code/stream and exposes:
-//   { state, presence, reactions, sendState, sendReaction, connected }
+// Subscribes to /api/room/:code/ws (WebSocket served by the room's Durable Object)
+// and exposes: { state, presence, reactions, sendState, sendReaction, connected }.
+//
+// Presence is derived from active WS connections in the DO — no client heartbeat.
+// Auto-reconnects on close with a 1.5s backoff.
 export function useRoom(code) {
   const [state, setState] = useState(null);
   const [presence, setPresence] = useState(0);
-  const [reactions, setReactions] = useState([]); // array of {id, emoji, by, t, left}
+  const [reactions, setReactions] = useState([]);
   const [connected, setConnected] = useState(false);
   const lastSentRef = useRef(null);
+  const wsRef = useRef(null);
 
-  // Subscribe to SSE
   useEffect(() => {
     if (!code) return;
-    let es;
     let cancelled = false;
+    let reconnectTimer = null;
 
-    // Initial fetch (covers cases where SSE state event isn't sent because room is empty)
-    fetch(`/api/room/${code}/state`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled) return;
-        if (data.state) setState(data.state);
-        if (typeof data.presence === "number") setPresence(data.presence);
-      })
-      .catch(() => { /* offline */ });
+    const connect = () => {
+      if (cancelled) return;
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${proto}://${window.location.host}/api/room/${code}/ws`);
+      wsRef.current = ws;
 
-    es = new EventSource(`/api/room/${code}/stream`);
-    es.addEventListener("hello", (e) => {
-      setConnected(true);
-      try {
-        const d = JSON.parse(e.data);
-        if (typeof d.presence === "number") setPresence(d.presence);
-      } catch { /* malformed */ }
-    });
-    es.addEventListener("state", (e) => {
-      try {
-        const next = JSON.parse(e.data);
-        setState(next);
-      } catch { /* malformed */ }
-    });
-    es.addEventListener("presence", (e) => {
-      try {
-        const d = JSON.parse(e.data);
-        if (typeof d.count === "number") setPresence(d.count);
-      } catch { /* malformed */ }
-    });
-    es.addEventListener("reaction", (e) => {
-      try {
-        const d = JSON.parse(e.data);
-        // Random horizontal position is computed at mint-time so it's stable across re-renders.
-        const id = `${d.t}_${Math.random().toString(36).slice(2, 6)}`;
-        const left = Math.round(8 + Math.random() * 84) + "%";
-        setReactions((prev) => [...prev, { id, left, ...d }]);
-        setTimeout(() => {
-          setReactions((prev) => prev.filter((r) => r.id !== id));
-        }, 3000);
-      } catch { /* malformed */ }
-    });
-    es.onerror = () => setConnected(false);
+      ws.onopen = () => setConnected(true);
 
-    // Heartbeat
-    const id = viewerId();
-    const heartbeat = () => {
-      fetch(`/api/room/${code}/presence`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
-      }).catch(() => { /* offline */ });
+      ws.onclose = () => {
+        setConnected(false);
+        if (!cancelled) {
+          reconnectTimer = setTimeout(connect, 1500);
+        }
+      };
+
+      ws.onerror = () => { /* onclose will fire next */ };
+
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "hello") {
+            if (typeof msg.presence === "number") setPresence(msg.presence);
+          } else if (msg.type === "state") {
+            setState(msg.data);
+          } else if (msg.type === "presence") {
+            if (typeof msg.count === "number") setPresence(msg.count);
+          } else if (msg.type === "reaction") {
+            const id = `${msg.t}_${Math.random().toString(36).slice(2, 6)}`;
+            const left = Math.round(8 + Math.random() * 84) + "%";
+            setReactions((prev) => [...prev, { id, left, emoji: msg.emoji, by: msg.by, t: msg.t }]);
+            setTimeout(() => {
+              setReactions((prev) => prev.filter((r) => r.id !== id));
+            }, 3000);
+          }
+        } catch { /* malformed */ }
+      };
     };
-    heartbeat();
-    const hbInterval = setInterval(heartbeat, 4000);
+
+    connect();
 
     return () => {
       cancelled = true;
-      clearInterval(hbInterval);
-      try { es.close(); } catch { /* already closed */ }
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (wsRef.current) {
+        try { wsRef.current.close(); } catch { /* already closed */ }
+        wsRef.current = null;
+      }
     };
   }, [code]);
 
@@ -85,7 +75,7 @@ export function useRoom(code) {
       const sig = JSON.stringify(next);
       if (sig === lastSentRef.current) return;
       lastSentRef.current = sig;
-      // Optimistic local update — server will echo via SSE shortly.
+      // Optimistic local update — the WS will echo it back from the DO shortly.
       setState(next);
       fetch(`/api/room/${code}/state`, {
         method: "POST",

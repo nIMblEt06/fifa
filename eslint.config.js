@@ -23,7 +23,16 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^_' }],
+    },
+  },
+  {
+    files: ['worker/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.worker,
+        WebSocketPair: 'readonly',
+      },
     },
   },
 ])

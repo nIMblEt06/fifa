@@ -1,12 +1,20 @@
 import { DurableObject } from "cloudflare:workers";
+import { startGame, applyAsk, applyDeclare, redactFor, healState, defaultTeams } from "../src/games/lit/engine.js";
 
 // One Durable Object instance per room code. Owns:
 //   • persistent room state (storage)
 //   • the set of currently-connected WebSockets (presence)
 //   • broadcasting state changes + reactions to all connections
 //
-// Uses the hibernation API (acceptWebSocket / webSocketMessage / webSocketClose),
-// so a sleeping room costs nothing.
+// Two room flavors:
+//   • "fifa" (default, legacy): client-authoritative. Whole state POSTed to
+//     /state and broadcast verbatim. Everyone sees the same blob.
+//   • "lit": server-authoritative. The authoritative game state lives in storage;
+//     clients drive it via WS messages (`join`, `start`, `ask`, `reset`).
+//     Each socket receives a redacted view (own hand visible only).
+//
+// Uses the hibernation API. WS attachments (serializeAttachment) carry the
+// per-socket identity (clientId, playerName, game) across hibernation.
 export class RoomDO extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
@@ -24,6 +32,7 @@ export class RoomDO extends DurableObject {
         return cors(json({ state, presence }));
       }
       if (request.method === "POST") {
+        // Legacy FIFA write path: client owns the state blob.
         const body = await request.json();
         await this.ctx.storage.put("state", body);
         this.broadcast({ type: "state", data: body });
@@ -43,8 +52,6 @@ export class RoomDO extends DurableObject {
     }
 
     if (action === "presence" && request.method === "POST") {
-      // Heartbeat is no longer required (presence comes from WS connections),
-      // but kept to avoid 404s from older client builds.
       return cors(json({ count: this.ctx.getWebSockets().length }));
     }
 
@@ -55,18 +62,24 @@ export class RoomDO extends DurableObject {
       const pair = new WebSocketPair();
       const client = pair[0];
       const server = pair[1];
-
-      // Hand the server-end to the runtime so it survives DO hibernation.
       this.ctx.acceptWebSocket(server);
 
-      // Send hello + current state to the new connection.
       const presence = this.ctx.getWebSockets().length;
       try { server.send(JSON.stringify({ type: "hello", presence })); } catch (_e) { void _e; }
+
+      // Push initial state.
+      //   • FIFA: send the whole state blob (legacy behavior).
+      //   • Lit: ALWAYS send a usable snapshot — the lobby list pre-game, a
+      //     spectator-view of the game once started — so refreshes and new
+      //     joiners can see who's seated without first having to claim a seat.
       const state = await this.ctx.storage.get("state");
-      if (state) {
+      const gameType = state?.gameType || "fifa";
+      if (state && gameType === "fifa") {
         try { server.send(JSON.stringify({ type: "state", data: state })); } catch (_e) { void _e; }
+      } else if (gameType === "lit") {
+        const payload = buildLitSnapshot(state, /* viewerId */ null);
+        try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
       }
-      // Notify everyone else of the new presence count.
       this.broadcastExcept(server, { type: "presence", count: presence });
 
       return new Response(null, { status: 101, webSocket: client });
@@ -77,13 +90,149 @@ export class RoomDO extends DurableObject {
 
   // Hibernation handlers ────────────────────────────────────────────────
 
-  async webSocketMessage() {
-    // We don't accept any client messages today — POSTs handle writes.
-    // Keeping the method defined satisfies the hibernation contract.
+  async webSocketMessage(ws, raw) {
+    let msg;
+    try { msg = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw)); }
+    catch { return; }
+    if (!msg || typeof msg !== "object") return;
+
+    if (msg.type === "join") {
+      // { type: "join", game: "lit", clientId, name }
+      const game = msg.game || "lit";
+      ws.serializeAttachment({ clientId: msg.clientId, name: msg.name, game });
+      if (game === "lit") {
+        await this.ensureLitState();
+        const state = await this.ctx.storage.get("state");
+        let dirty = false;
+        // Seat the player if not yet started. Require a name to claim a seat
+        // (a nameless ws is just a spectator/reconnect probe).
+        if (!state.game && msg.name) {
+          state.lobby = state.lobby || [];
+          const existing = state.lobby.find((p) => p.id === msg.clientId);
+          const isNew = !existing;
+          if (existing) existing.name = msg.name;
+          else state.lobby.push({ id: msg.clientId, name: msg.name });
+          // If team mode is set, slot the new joiner into the smaller team
+          // so the lobby stays balanced.
+          if (isNew && state.mode === "team" && state.teams) {
+            const [a, b] = state.teams;
+            (a.playerIds.length <= b.playerIds.length ? a : b)
+              .playerIds.push(msg.clientId);
+          }
+          dirty = true;
+        }
+        // Self-heal: in-flight games saved before the empty-hand-auto-draw
+        // fix can be stuck. healState advances turns or auto-draws as needed.
+        if (state.game && !state.game.winner) {
+          const before = JSON.stringify(state.game);
+          state.game = healState(state.game);
+          if (JSON.stringify(state.game) !== before) dirty = true;
+        }
+        if (dirty) await this.ctx.storage.put("state", state);
+        await this.broadcastLitState();
+      }
+      return;
+    }
+
+    if (msg.type === "setMode") {
+      // Switch lobby into solo or team mode. Resets team assignment using
+      // the default alternating split.
+      const state = await this.ctx.storage.get("state");
+      if (!state || state.gameType !== "lit" || state.game) return;
+      const mode = msg.mode === "team" ? "team" : "solo";
+      state.mode = mode;
+      state.teams = mode === "team" ? defaultTeams(state.lobby || []) : null;
+      await this.ctx.storage.put("state", state);
+      await this.broadcastLitState();
+      return;
+    }
+
+    if (msg.type === "swapTeam") {
+      // Flip the target player to the other team.
+      const state = await this.ctx.storage.get("state");
+      if (!state || state.gameType !== "lit" || state.game) return;
+      if (state.mode !== "team" || !state.teams) return;
+      const target = msg.targetClientId;
+      let moved = false;
+      for (const t of state.teams) {
+        const idx = t.playerIds.indexOf(target);
+        if (idx >= 0) {
+          t.playerIds.splice(idx, 1);
+          const other = state.teams.find((x) => x.id !== t.id);
+          other.playerIds.push(target);
+          moved = true;
+          break;
+        }
+      }
+      if (!moved) return;
+      await this.ctx.storage.put("state", state);
+      await this.broadcastLitState();
+      return;
+    }
+
+    if (msg.type === "start") {
+      const state = await this.ctx.storage.get("state");
+      if (!state || state.gameType !== "lit") return;
+      if (state.game) return;
+      if (!state.lobby || state.lobby.length < 2) return;
+      const mode = state.mode === "team" ? "team" : "solo";
+      try {
+        const opts = mode === "team" ? { mode, teams: state.teams } : { mode };
+        state.game = startGame(state.lobby, opts);
+      } catch (e) {
+        try { ws.send(JSON.stringify({ type: "error", message: e.message })); } catch (_e) { void _e; }
+        return;
+      }
+      await this.ctx.storage.put("state", state);
+      await this.broadcastLitState();
+      return;
+    }
+
+    if (msg.type === "ask") {
+      const state = await this.ctx.storage.get("state");
+      if (!state?.game) return;
+      const att = ws.deserializeAttachment();
+      if (!att?.clientId) return;
+      const res = applyAsk(state.game, att.clientId, msg.toId, msg.rank);
+      if (res.error) {
+        try { ws.send(JSON.stringify({ type: "error", message: res.error })); } catch (_e) { void _e; }
+        return;
+      }
+      state.game = res.state;
+      await this.ctx.storage.put("state", state);
+      await this.broadcastLitState();
+      return;
+    }
+
+    if (msg.type === "declare") {
+      const state = await this.ctx.storage.get("state");
+      if (!state?.game) return;
+      const att = ws.deserializeAttachment();
+      if (!att?.clientId) return;
+      const res = applyDeclare(state.game, att.clientId, msg.rank);
+      if (res.error) {
+        try { ws.send(JSON.stringify({ type: "error", message: res.error })); } catch (_e) { void _e; }
+        return;
+      }
+      state.game = res.state;
+      await this.ctx.storage.put("state", state);
+      await this.broadcastLitState();
+      return;
+    }
+
+    if (msg.type === "reset") {
+      const state = await this.ctx.storage.get("state");
+      if (!state || state.gameType !== "lit") return;
+      const lobby = state.lobby || [];
+      const mode = state.mode === "team" ? "team" : "solo";
+      const teams = mode === "team" ? defaultTeams(lobby) : null;
+      await this.ctx.storage.put("state", { gameType: "lit", lobby, mode, teams, game: null });
+      await this.broadcastLitState();
+      return;
+    }
   }
 
   async webSocketClose() {
-    // The closed socket is removed from getWebSockets() before this fires.
     const count = this.ctx.getWebSockets().length;
     this.broadcast({ type: "presence", count });
   }
@@ -94,6 +243,26 @@ export class RoomDO extends DurableObject {
   }
 
   // Helpers ─────────────────────────────────────────────────────────────
+
+  async ensureLitState() {
+    let state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "lit") {
+      state = { gameType: "lit", lobby: [], game: null };
+      await this.ctx.storage.put("state", state);
+    }
+    return state;
+  }
+
+  async broadcastLitState() {
+    const state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "lit") return;
+    for (const ws of this.ctx.getWebSockets()) {
+      let viewerId = null;
+      try { viewerId = ws.deserializeAttachment()?.clientId || null; } catch { /* none */ }
+      const payload = buildLitSnapshot(state, viewerId);
+      try { ws.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+    }
+  }
 
   broadcast(msg) {
     const data = JSON.stringify(msg);
@@ -109,6 +278,24 @@ export class RoomDO extends DurableObject {
       try { ws.send(data); } catch (_e) { void _e; }
     }
   }
+}
+
+// Build the snapshot we send to a Lit client. Same shape pre- and post-start
+// so the client can rely on `players` being the authoritative seat list.
+function buildLitSnapshot(state, viewerId) {
+  const lobby = state?.lobby || [];
+  const mode = state?.mode === "team" ? "team" : "solo";
+  if (!state?.game) {
+    return {
+      phase: "lobby",
+      mode,
+      players: lobby,
+      teams: mode === "team" ? state?.teams || null : null,
+      opponents: lobby.filter((p) => p.id !== viewerId),
+    };
+  }
+  const view = redactFor(state.game, viewerId);
+  return { ...view, phase: "playing", players: view.players };
 }
 
 function cors(response) {

@@ -1,18 +1,41 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { viewerId } from "./room";
 
-// Subscribes to /api/room/:code/ws (WebSocket served by the room's Durable Object)
-// and exposes: { state, presence, reactions, sendState, sendReaction, connected }.
+// Subscribes to /api/room/:code/ws and exposes:
+//   { state, presence, reactions, sendState, sendAction, sendReaction, connected }
 //
-// Presence is derived from active WS connections in the DO — no client heartbeat.
-// Auto-reconnects on close with a 1.5s backoff.
-export function useRoom(code) {
+// For "fifa" rooms (legacy default), `sendState` POSTs a full state blob
+// (server is just a relay).
+//
+// For "lit" rooms, callers pass `{ game: "lit", clientId }`. On every open
+// we send a `join` message so the DO can map this socket → clientId, and
+// the server pushes a redacted per-player view back via `type:"state"`.
+// Use `sendAction({type:"start"|"ask"|...})` for game moves.
+export function useRoom(code, opts = {}) {
+  const { game = "fifa", clientId: cid = null, name = null } = opts;
   const [state, setState] = useState(null);
   const [presence, setPresence] = useState(0);
   const [reactions, setReactions] = useState([]);
   const [connected, setConnected] = useState(false);
+  const [error, setError] = useState(null);
   const lastSentRef = useRef(null);
   const wsRef = useRef(null);
+  const errorTimerRef = useRef(null);
+  const pendingNameRef = useRef(name);
+  useEffect(() => { pendingNameRef.current = name; }, [name]);
+
+  // Surface a server-rejected action (e.g. "not your turn"). Auto-expires so
+  // the banner doesn't linger; callers can also dismiss it.
+  const dismissError = useCallback(() => {
+    clearTimeout(errorTimerRef.current);
+    setError(null);
+  }, []);
+  const raiseError = useCallback((message) => {
+    setError({ message, id: Date.now() });
+    clearTimeout(errorTimerRef.current);
+    errorTimerRef.current = setTimeout(() => setError(null), 4000);
+  }, []);
+  useEffect(() => () => clearTimeout(errorTimerRef.current), []);
 
   useEffect(() => {
     if (!code) return;
@@ -25,7 +48,18 @@ export function useRoom(code) {
       const ws = new WebSocket(`${proto}://${window.location.host}/api/room/${code}/ws`);
       wsRef.current = ws;
 
-      ws.onopen = () => setConnected(true);
+      ws.onopen = () => {
+        setConnected(true);
+        // For server-authoritative games, re-identify on reconnect IF the
+        // user has already joined (we have their name cached). First-time
+        // joining is driven by sendAction({type:"join", name}) so the user
+        // controls when they take a seat.
+        if (game === "lit" && cid && pendingNameRef.current) {
+          try {
+            ws.send(JSON.stringify({ type: "join", game, clientId: cid, name: pendingNameRef.current }));
+          } catch { /* will retry on reconnect */ }
+        }
+      };
 
       ws.onclose = () => {
         setConnected(false);
@@ -52,6 +86,8 @@ export function useRoom(code) {
             setTimeout(() => {
               setReactions((prev) => prev.filter((r) => r.id !== id));
             }, 3000);
+          } else if (msg.type === "error") {
+            raiseError(msg.message || "Something went wrong.");
           }
         } catch { /* malformed */ }
       };
@@ -67,7 +103,7 @@ export function useRoom(code) {
         wsRef.current = null;
       }
     };
-  }, [code]);
+  }, [code, game, cid]);
 
   const sendState = useCallback(
     (next) => {
@@ -75,7 +111,6 @@ export function useRoom(code) {
       const sig = JSON.stringify(next);
       if (sig === lastSentRef.current) return;
       lastSentRef.current = sig;
-      // Optimistic local update — the WS will echo it back from the DO shortly.
       setState(next);
       fetch(`/api/room/${code}/state`, {
         method: "POST",
@@ -85,6 +120,19 @@ export function useRoom(code) {
     },
     [code]
   );
+
+  const sendAction = useCallback((action) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // For `join`, callers can pass a name; remember it so reconnects re-join.
+    if (action?.type === "join" && action.name) pendingNameRef.current = action.name;
+    try {
+      const payload = action.type === "join"
+        ? { ...action, game, clientId: cid }
+        : action;
+      ws.send(JSON.stringify(payload));
+    } catch { /* dropped */ }
+  }, [game, cid]);
 
   const sendReaction = useCallback(
     (emoji) => {
@@ -98,5 +146,5 @@ export function useRoom(code) {
     [code]
   );
 
-  return { state, presence, reactions, connected, sendState, sendReaction };
+  return { state, presence, reactions, connected, error, dismissError, sendState, sendAction, sendReaction };
 }

@@ -26,7 +26,7 @@ export default function GamePicker({ onPick, onOpenHof }) {
     <div className="app">
       <header className="masthead">
         <h1>
-          LOCAL<span className="slash">/</span>GAMING HUB
+          <span className="slash">1</span>Hub
         </h1>
       </header>
       <main>

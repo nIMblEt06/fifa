@@ -30,7 +30,7 @@ export default function App() {
     const title = onHof
       ? "HALL OF FAME"
       : !route
-      ? "LOCAL / GAMING HUB"
+      ? "1Hub"
       : route.game === "lit"
         ? `LIT · ${route.code}`
         : route.game === "poker"

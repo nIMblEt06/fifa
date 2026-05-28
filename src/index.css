@@ -1826,3 +1826,255 @@ tbody tr.qualified td:nth-child(1) {
   margin-top: 6px;
   font-size: 12px;
 }
+
+/* ─────────────────────────────────────────────────────────────
+   POKER — cash-game buy-in / settlement tracker
+   ───────────────────────────────────────────────────────────── */
+
+.poker-lobby { max-width: 540px; }
+
+.poker-ratio { margin-bottom: 1.5rem; }
+
+.poker-ratio-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--mute);
+}
+
+.poker-ratio-row input {
+  width: 7rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--paper);
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 0.95rem;
+}
+.poker-ratio-row input:focus { outline: none; border-color: var(--hot); }
+.poker-ratio-row .poker-cur { color: var(--hot); font-weight: 800; }
+
+.poker-ratio-note {
+  margin-top: 0.7rem;
+  color: var(--hot);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
+/* ── Session / cashout rows ─────────────────────────────────── */
+
+.poker-table {
+  border: 1px solid var(--paper);
+  margin-bottom: 1.5rem;
+}
+
+.poker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--dim);
+}
+.poker-row:last-child { border-bottom: 0; }
+
+@media (min-width: 720px) {
+  .poker-row {
+    grid-template-columns: 9rem minmax(0, 1fr) auto;
+    align-items: center;
+  }
+}
+
+.poker-row-name {
+  font-family: var(--mono);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--paper);
+}
+
+.poker-row-totals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 0.9rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--mute);
+}
+.poker-row-totals strong { color: var(--paper); font-size: 0.95rem; }
+.poker-row-money { color: var(--hot); font-weight: 700; }
+
+.poker-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.poker-row-actions input {
+  width: 6.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--paper);
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 0.9rem;
+}
+.poker-row-actions input:focus { outline: none; border-color: var(--hot); }
+
+.poker-btn {
+  padding: 0.5rem 0.8rem;
+  background: var(--dim);
+  color: var(--paper);
+  border: 1px solid var(--paper);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.poker-btn:hover { background: var(--hot); color: var(--hot-ink); border-color: var(--hot); }
+.poker-btn-undo:hover { background: var(--shame); border-color: var(--shame); color: var(--paper); }
+
+.poker-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  align-items: center;
+}
+.poker-buttons .start-btn { width: auto; flex: 1; min-width: 12rem; }
+
+/* ── Results ─────────────────────────────────────────────────── */
+
+.poker-warn {
+  border: 1px solid var(--shame);
+  color: var(--shame);
+  background: rgba(255, 59, 48, 0.08);
+  padding: 0.8rem 1rem;
+  margin-bottom: 1rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+}
+.poker-warn code { text-transform: none; background: var(--ink); padding: 0 0.3rem; color: var(--paper); }
+
+.poker-net-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+.poker-net-table th {
+  text-align: left;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 2px solid var(--paper);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.68rem;
+  color: var(--mute);
+}
+.poker-net-table td {
+  padding: 0.6rem 0.7rem;
+  border-bottom: 1px solid var(--dim);
+}
+.poker-net-table td.pos { color: var(--live); font-weight: 700; }
+.poker-net-table td.neg { color: var(--shame); font-weight: 700; }
+
+/* Override the global table rules (intended for FIFA standings) so every column
+   in the poker net table uses the same mono font and numeric columns right-align. */
+.poker-net-table th:nth-child(1) { text-align: left; }
+.poker-net-table th:nth-child(2),
+.poker-net-table th:nth-child(3),
+.poker-net-table th:nth-child(4),
+.poker-net-table th:nth-child(5) { text-align: right; }
+.poker-net-table td {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--paper);
+  text-transform: none;
+  width: auto;
+  font-variant-numeric: tabular-nums;
+}
+.poker-net-table td:nth-child(1) { text-align: left; color: var(--paper); font-weight: 600; }
+.poker-net-table td:nth-child(2),
+.poker-net-table td:nth-child(3),
+.poker-net-table td:nth-child(4),
+.poker-net-table td:nth-child(5) { text-align: right; }
+
+/* Hide the up/down spinners on poker number inputs — we type in chip counts,
+   the steppers are noise. */
+.poker-row input[type="number"],
+.poker-ratio-row input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.poker-row input[type="number"]::-webkit-outer-spin-button,
+.poker-row input[type="number"]::-webkit-inner-spin-button,
+.poker-ratio-row input[type="number"]::-webkit-outer-spin-button,
+.poker-ratio-row input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.poker-transfers { list-style: none; }
+.poker-transfers li {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--dim);
+  margin-bottom: -1px;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.poker-debtor { color: var(--shame); font-weight: 700; }
+.poker-creditor { color: var(--live); font-weight: 700; }
+.poker-arrow { color: var(--mute); }
+.poker-amount { margin-left: auto; color: var(--hot); font-weight: 800; }
+
+.poker-even {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--live);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.poker-splitwise { display: flex; flex-direction: column; gap: 1rem; }
+
+.poker-map { border: 1px solid var(--paper); }
+.poker-map-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--dim);
+}
+.poker-map-row:last-child { border-bottom: 0; }
+.poker-map-row .combobox { flex: 1; }
+.poker-map-row .player-label { min-width: 8rem; }
+
+.poker-settle-results { list-style: none; font-family: var(--mono); font-size: 0.82rem; }
+.poker-settle-results li {
+  padding: 0.4rem 0.7rem;
+  border-bottom: 1px solid var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.poker-settle-results li.ok { color: var(--live); }
+.poker-settle-results li.fail { color: var(--shame); text-transform: none; }

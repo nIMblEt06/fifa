@@ -14,6 +14,12 @@ export default function GamePicker({ onPick }) {
       tagline: "FOUR-OF-A-KIND",
       blurb: "Local Go-Fish variant. Ask for ranks you hold, hunt the deck for full sets.",
     },
+    {
+      id: "poker",
+      title: "POKER",
+      tagline: "CASH GAME",
+      blurb: "Poker-night buy-in tracker. Count the chips, settle the net to Splitwise.",
+    },
   ];
 
   return (

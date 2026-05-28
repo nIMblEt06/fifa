@@ -2078,3 +2078,142 @@ tbody tr.qualified td:nth-child(1) {
 }
 .poker-settle-results li.ok { color: var(--live); }
 .poker-settle-results li.fail { color: var(--shame); text-transform: none; }
+
+/* ── Multi-group stage ────────────────────────────────────── */
+.group-phase-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* Two-column grid: Group A on the left, Group B on the right.
+   Each group block lays out matches on top, standings under.
+   Aligning items at the start keeps the two standings tables on the same
+   row when one group's matches list is taller than the other's. */
+.groups-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.25rem 1.5rem;
+  align-items: start;
+}
+@media (min-width: 760px) {
+  .groups-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  /* Side-by-side groups make match cards narrow. The standings table under
+     each group already shows player + team, so on the cards here we hide
+     both text lines and just show a bigger badge. Mobile (single column)
+     keeps the full text. */
+  .groups-row .match-card .match-team-text { display: none; }
+  .groups-row .match-card .badge { width: 44px; height: 44px; }
+}
+
+.group-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 0;
+  border-top: 2px solid var(--rule);
+  padding-top: 0.75rem;
+}
+
+.group-title {
+  font-family: var(--display);
+  text-transform: uppercase;
+  font-size: 1.4rem;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.6rem;
+}
+
+.group-block .standings {
+  margin-top: 0.9rem;
+}
+
+/* ── Group config (setup) ─────────────────────────────────── */
+.group-config {
+  margin: 0.5rem 0 1.25rem;
+}
+
+.group-mode-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--hot);
+  padding: 0.25rem 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.group-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.9rem;
+}
+
+.group-chip {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--dim);
+  color: var(--mute);
+}
+
+.qualifier-row {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.format-toggle {
+  margin: 0.25rem 0 1rem;
+}
+.format-toggle label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin-bottom: 0.45rem;
+}
+
+.group-config label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin-bottom: 0.45rem;
+}
+
+/* ── Knockout byes / locked slots ─────────────────────────── */
+.match-card.bye {
+  opacity: 0.85;
+  cursor: default;
+}
+
+.match-card.locked {
+  cursor: default;
+}
+
+.match-card.locked:hover,
+.match-card.bye:hover {
+  background: var(--ink);
+}
+
+.bye-tag {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--warn);
+}
+
+.player-name.tbd {
+  color: var(--mute);
+  font-style: italic;
+}

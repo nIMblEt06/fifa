@@ -68,7 +68,7 @@ export default function Scorer({ match, players, teamsByName, onSubmit, onClose,
     <div className="scorer-overlay" role="dialog" aria-modal="true">
       <button className="scorer-close" onClick={onClose} aria-label="Close">✕</button>
       <div className="scorer-header">
-        {match.id.startsWith("group") ? "Group Match" : match.id === "final" ? "The Final" : "Semi-Final"}
+        {match.id.startsWith("group") ? "Group Match" : "Knockout Match"}
         {drawBlocked && " · Knockout — no draws"}
       </div>
 

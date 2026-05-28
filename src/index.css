@@ -1339,9 +1339,12 @@ tbody tr.qualified td:nth-child(1) {
 }
 .team-select-row .combobox {
   flex: 1 1 100%;
+  min-width: 0;
 }
+.team-select-row .row-actions { flex-shrink: 0; }
 @media (min-width: 520px) {
-  .team-select-row .combobox { flex: 1 1 auto; }
+  .team-select-row { flex-wrap: nowrap; }
+  .team-select-row .combobox { flex: 1 1 0; }
 }
 
 /* ── Hub / GamePicker ─────────────────────────────────────────── */
@@ -1432,10 +1435,24 @@ tbody tr.qualified td:nth-child(1) {
   background: var(--ink);
   color: var(--paper);
   border: 2px solid var(--paper);
-  padding: 10px 12px;
+  padding: 10px 36px 10px 14px;
   font-family: inherit;
   font-size: 15px;
   font-weight: 700;
+  letter-spacing: 1px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--paper) 50%),
+                    linear-gradient(135deg, var(--paper) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 12px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+.custom-room-game:focus { outline: none; border-color: var(--hot); }
+.custom-room-game option {
+  background: var(--ink);
+  color: var(--paper);
 }
 .custom-room-btn {
   background: var(--paper);

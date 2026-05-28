@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#0a0a0a"/>
+  <text x="256" y="190" text-anchor="middle" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="140" font-weight="800" fill="#f4f1ea" letter-spacing="-4">EL</text>
+  <rect x="166" y="218" width="180" height="6" fill="#f4f1ea"/>
+  <text x="256" y="320" text-anchor="middle" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="74" font-weight="800" fill="#ff1f7a" letter-spacing="-2">CRAPICO</text>
+  <text x="256" y="375" text-anchor="middle" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="18" font-weight="700" fill="#6b6b6b" letter-spacing="4">FIFA INVITATIONAL</text>
+  <text x="256" y="415" text-anchor="middle" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="22" font-weight="800" fill="#ff1f7a" letter-spacing="6">13 · JUN</text>
+</svg>

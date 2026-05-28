@@ -1,31 +1,71 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { groupSizes } from "../utils/groups";
+import RosterCombobox from "./RosterCombobox";
 
 const GROUP_THRESHOLD = 6;
 
 export default function PlayerSetup({ onStart }) {
-  const [name, setName] = useState("");
+  // players: [{ name, rosterId }] — rosterId is null until the server returns one
+  // (for newly-created entries, we POST as soon as the user picks "+ Add 'foo'").
   const [players, setPlayers] = useState([]);
   const [matchesPerPlayer, setMatchesPerPlayer] = useState(4);
   const [qualifiersPerGroup, setQualifiersPerGroup] = useState(2);
-  const [groupRounds, setGroupRounds] = useState(1); // 1 = single round-robin, 2 = home & away
-  // User-chosen format. Groups only enabled when enough players to split into ≥2 groups.
-  const [formatChoice, setFormatChoice] = useState("groups"); // "groups" | "league"
+  const [groupRounds, setGroupRounds] = useState(1);
+  const [formatChoice, setFormatChoice] = useState("groups");
 
-  const addPlayer = () => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    if (players.includes(trimmed)) return;
-    setPlayers([...players, trimmed]);
-    setName("");
-  };
+  const [roster, setRoster] = useState([]);
+  const [rosterError, setRosterError] = useState(null);
+  const [adding, setAdding] = useState(false);
+
+  // Fetch the roster on mount. If the endpoint isn't reachable (e.g. someone is
+  // running just `vite` without the worker) we still let the page work — names
+  // get added as "new" and the tournament just won't be persisted.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/roster");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) setRoster(Array.isArray(data) ? data : []);
+      } catch (e) {
+        if (!cancelled) setRosterError(e.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const pickPlayer = useCallback(async (choice) => {
+    // Don't double-add an existing roster entry.
+    if (choice.id != null && players.some((p) => p.rosterId === choice.id)) return;
+    if (choice.isNew) {
+      // Auto-create on the server so we have a rosterId immediately.
+      setAdding(true);
+      try {
+        const res = await fetch("/api/roster", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: choice.name }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.id) {
+          setRosterError(data?.error || `Failed (${res.status})`);
+          return;
+        }
+        setRoster((prev) => (prev.some((p) => p.id === data.id) ? prev : [...prev, { id: data.id, name: data.name }]));
+        setPlayers((prev) => [...prev, { name: data.name, rosterId: data.id }]);
+      } catch (e) {
+        setRosterError(e.message);
+      } finally {
+        setAdding(false);
+      }
+    } else {
+      setPlayers((prev) => [...prev, { name: choice.name, rosterId: choice.id }]);
+    }
+  }, [players]);
 
   const removePlayer = (index) => {
     setPlayers(players.filter((_, i) => i !== index));
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter") addPlayer();
   };
 
   const N = players.length;
@@ -40,32 +80,38 @@ export default function PlayerSetup({ onStart }) {
   const options = Array.from({ length: 5 }, (_, i) => i + 2).filter((n) => n <= maxM);
 
   const start = () => {
+    const names = players.map((p) => p.name);
+    const rosterIds = players.map((p) => p.rosterId ?? null);
     if (isGroups) {
-      onStart(players, safeM, { format: "groups", qualifiersPerGroup, groupRounds });
+      onStart(names, safeM, { format: "groups", qualifiersPerGroup, groupRounds, rosterIds });
     } else {
-      onStart(players, safeM, { format: "league" });
+      onStart(names, safeM, { format: "league", rosterIds });
     }
   };
 
   return (
     <div className="setup">
       <h2>Add Players</h2>
-      <div className="input-row">
-        <input
-          type="text"
-          placeholder="Player name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={handleKeyDown}
-        />
-        <button onClick={addPlayer}>Add</button>
-      </div>
+      <RosterCombobox
+        roster={roster}
+        taken={players.map((p) => p.rosterId).filter((id) => id != null)}
+        onPick={pickPlayer}
+        busy={adding}
+      />
+      {rosterError && (
+        <p className="tap-hint" style={{ color: "var(--shame)", marginTop: "0.4rem" }}>
+          Roster: {rosterError} — names you add will still work but won&apos;t be saved to Hall of Fame.
+        </p>
+      )}
 
       {players.length > 0 && (
         <ul className="player-list">
           {players.map((p, i) => (
             <li key={i}>
-              <span>{p}</span>
+              <span>
+                {p.name}
+                {p.rosterId == null && <span className="roster-unsaved" title="Not in roster"> ·</span>}
+              </span>
               <button className="remove-btn" onClick={() => removePlayer(i)}>✕</button>
             </li>
           ))}

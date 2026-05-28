@@ -2,6 +2,11 @@ name = "fifa-tournament"
 main = "worker/index.js"
 compatibility_date = "2025-01-01"
 
+routes = [
+  { pattern = "1-hub.xyz/*",     zone_name = "1-hub.xyz" },
+  { pattern = "www.1-hub.xyz/*", zone_name = "1-hub.xyz" },
+]
+
 [assets]
 directory = "./dist"
 binding = "ASSETS"
@@ -14,3 +19,9 @@ class_name = "RoomDO"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RoomDO"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "1hub-stats"
+database_id = "0dd6fea6-e215-4673-9b70-140dd96aea0f"
+migrations_dir = "migrations"

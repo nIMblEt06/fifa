@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import PlayerSetup from "./components/PlayerSetup";
 import TeamSelect from "./components/TeamSelect";
 import GroupStage from "./components/GroupStage";
@@ -44,6 +44,13 @@ function emptyState() {
     finalMatch: null, // single legacy knockout
     knockout: { rounds: [] }, // groups: generalized rounds
     champion: null,
+    runnerUp: null, // index into players (set when the title match completes)
+    // Hall-of-Fame persistence
+    rosterIds: [],            // parallel to playerNames
+    startedAt: null,          // stamped when TeamSelect → Group
+    endedAt: null,            // stamped when champion is crowned
+    savedTournamentId: null,  // d1 row id after auto-save
+    saveError: null,
   };
 }
 
@@ -76,6 +83,12 @@ export default function FifaApp({ code, onLeave }) {
     finalMatch,
     knockout,
     champion,
+    runnerUp,
+    rosterIds,
+    startedAt,
+    endedAt,
+    savedTournamentId,
+    saveError,
   } = state;
 
   const isGroups = format === "groups";
@@ -129,6 +142,118 @@ export default function FifaApp({ code, onLeave }) {
 
   const [openMatch, setOpenMatch] = useState(null);
 
+  // ── Hall-of-Fame auto-save ────────────────────────────────
+  // Fires once when the tournament ends. Server dedups via (room_code, ended_at)
+  // so it's safe if multiple clients race.
+  const savingRef = useRef(false);
+  const canPersist =
+    champion != null &&
+    endedAt != null &&
+    savedTournamentId == null &&
+    !saveError &&
+    Array.isArray(rosterIds) &&
+    rosterIds.length === playerNames.length &&
+    rosterIds.every((id) => id != null);
+
+  useEffect(() => {
+    if (!canPersist || savingRef.current) return;
+    savingRef.current = true;
+
+    // Per-player W/D/L/GF/GA from completed, non-bye matches.
+    const stats = players.map(() => ({ wins: 0, draws: 0, losses: 0, gf: 0, ga: 0 }));
+    for (const m of allMatches) {
+      if (!m.completed || m.bye) continue;
+      if (m.home == null || m.away == null) continue;
+      stats[m.home].gf += m.homeScore; stats[m.home].ga += m.awayScore;
+      stats[m.away].gf += m.awayScore; stats[m.away].ga += m.homeScore;
+      if (m.homeScore > m.awayScore) { stats[m.home].wins++; stats[m.away].losses++; }
+      else if (m.homeScore < m.awayScore) { stats[m.away].wins++; stats[m.home].losses++; }
+      else { stats[m.home].draws++; stats[m.away].draws++; }
+    }
+
+    const groupOf = {};
+    if (isGroups) {
+      for (const g of groups) for (const pi of g.playerIndexes) groupOf[pi] = g.id;
+    }
+
+    const participants = players.map((p, idx) => ({
+      playerId: rosterIds[idx],
+      teamName: p.team || null,
+      finalRank: idx === champion ? 1 : idx === runnerUp ? 2 : null,
+      groupId: groupOf[idx] || null,
+      wins: stats[idx].wins,
+      draws: stats[idx].draws,
+      losses: stats[idx].losses,
+      goalsFor: stats[idx].gf,
+      goalsAgainst: stats[idx].ga,
+      reachedStage:
+        idx === champion ? "champion" :
+        idx === runnerUp ? "final" :
+        "group",
+    }));
+
+    const groupIdForMatch = (m) => {
+      if (!isGroups) return null;
+      const g = groups.find((g) => g.matches.some((mm) => mm.id === m.id));
+      return g?.id ?? null;
+    };
+    const stageForMatch = (m) => {
+      if (m.id.startsWith("ko-")) return "knockout";
+      if (m.id === "final") return "final";
+      if (m.id.startsWith("semi")) return "sf";
+      return "group";
+    };
+
+    const matchPayloads = allMatches
+      .filter((m) => m.completed && !m.bye && m.home != null && m.away != null)
+      .map((m) => ({
+        stage: stageForMatch(m),
+        groupId: groupIdForMatch(m),
+        homeId: rosterIds[m.home],
+        awayId: rosterIds[m.away],
+        homeTeam: players[m.home]?.team || null,
+        awayTeam: players[m.away]?.team || null,
+        homeScore: m.homeScore,
+        awayScore: m.awayScore,
+        playedAt: m.playedAt || null,
+      }));
+
+    const payload = {
+      roomCode: code,
+      format: isGroups ? "groups" : "league",
+      groupRounds: isGroups ? groupRounds : null,
+      qualifiers: isGroups ? qualifiersPerGroup : null,
+      matchesPerPlayer: isGroups ? null : matchesPerPlayer,
+      startedAt,
+      endedAt,
+      championPlayerId: rosterIds[champion] ?? null,
+      runnerUpPlayerId: runnerUp != null ? rosterIds[runnerUp] ?? null : null,
+      participants,
+      matches: matchPayloads,
+    };
+
+    (async () => {
+      try {
+        const res = await fetch("/api/tournaments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.id) {
+          update({ saveError: data?.error || `Save failed (${res.status})` });
+        } else {
+          update({ savedTournamentId: data.id });
+        }
+      } catch (e) {
+        update({ saveError: e.message });
+      } finally {
+        savingRef.current = false;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canPersist]);
+
   const handleStart = (names, mpp, opts = {}) => {
     // Format comes from PlayerSetup's explicit toggle. Fall back to auto so
     // older callers / stored states still work.
@@ -142,11 +267,13 @@ export default function FifaApp({ code, onLeave }) {
       matchesPerPlayer: mpp,
       qualifiersPerGroup: opts.qualifiersPerGroup ?? 2,
       groupRounds: opts.groupRounds === 2 ? 2 : 1,
+      rosterIds: Array.isArray(opts.rosterIds) ? opts.rosterIds : [],
     });
   };
 
   const handleTeamsConfirmed = (teamSelections) => {
     const assigned = playerNames.map((name, i) => ({ name, team: teamSelections[i] }));
+    const now = Date.now();
 
     if (isGroups) {
       const built = splitIntoGroups(assigned.map((_, i) => i), undefined, groupRounds);
@@ -154,7 +281,7 @@ export default function FifaApp({ code, onLeave }) {
         window.alert("Could not split players into groups. Try a different player count.");
         return;
       }
-      update({ players: assigned, groups: built, phase: PHASES.GROUP });
+      update({ players: assigned, groups: built, phase: PHASES.GROUP, startedAt: now });
       return;
     }
 
@@ -171,17 +298,18 @@ export default function FifaApp({ code, onLeave }) {
       awayScore: 0,
       completed: false,
     }));
-    update({ players: assigned, groupMatches: matches, phase: PHASES.GROUP });
+    update({ players: assigned, groupMatches: matches, phase: PHASES.GROUP, startedAt: now });
   };
 
   const handleScoreSubmit = (matchId, h, a) => {
+    const ts = Date.now();
     if (matchId.startsWith("ko-")) {
       // Generalized group-format knockout.
       update((prev) => {
         let rounds = prev.knockout.rounds.map((r) => ({
           ...r,
           matches: r.matches.map((m) =>
-            m.id === matchId ? { ...m, homeScore: h, awayScore: a, completed: true } : m
+            m.id === matchId ? { ...m, homeScore: h, awayScore: a, completed: true, playedAt: ts } : m
           ),
         }));
         // Advance as far as possible (build subsequent rounds / crown champion).
@@ -197,7 +325,18 @@ export default function FifaApp({ code, onLeave }) {
           if (res.rounds === rounds) break; // nothing changed
           rounds = res.rounds;
         }
-        return { ...prev, knockout: { rounds }, champion: champ };
+        const patch = { ...prev, knockout: { rounds }, champion: champ };
+        // If we just crowned a champion, also capture endedAt + runnerUp from
+        // the final round's title match.
+        if (champ != null && prev.champion == null) {
+          patch.endedAt = ts;
+          const lastRound = rounds[rounds.length - 1];
+          const finalM = lastRound?.matches?.[0];
+          if (finalM && finalM.completed) {
+            patch.runnerUp = finalM.homeScore > finalM.awayScore ? finalM.away : finalM.home;
+          }
+        }
+        return patch;
       });
       setOpenMatch(null);
       return;
@@ -211,7 +350,7 @@ export default function FifaApp({ code, onLeave }) {
             groups: prev.groups.map((g) => ({
               ...g,
               matches: g.matches.map((m) =>
-                m.id === matchId ? { ...m, homeScore: h, awayScore: a, completed: true } : m
+                m.id === matchId ? { ...m, homeScore: h, awayScore: a, completed: true, playedAt: ts } : m
               ),
             })),
           };
@@ -219,14 +358,14 @@ export default function FifaApp({ code, onLeave }) {
         return {
           ...prev,
           groupMatches: prev.groupMatches.map((m) =>
-            m.id === matchId ? { ...m, homeScore: h, awayScore: a, completed: true } : m
+            m.id === matchId ? { ...m, homeScore: h, awayScore: a, completed: true, playedAt: ts } : m
           ),
         };
       });
     } else if (matchId.startsWith("semi")) {
       update((prev) => {
         const updatedSemis = prev.semiFinals.map((m) =>
-          m.id === matchId ? { ...m, homeScore: h, awayScore: a, completed: true } : m
+          m.id === matchId ? { ...m, homeScore: h, awayScore: a, completed: true, playedAt: ts } : m
         );
         let newFinal = prev.finalMatch;
         if (updatedSemis.every((m) => m.completed)) {
@@ -238,9 +377,10 @@ export default function FifaApp({ code, onLeave }) {
       });
     } else if (matchId === "final") {
       update((prev) => {
-        const updatedFinal = { ...prev.finalMatch, homeScore: h, awayScore: a, completed: true };
+        const updatedFinal = { ...prev.finalMatch, homeScore: h, awayScore: a, completed: true, playedAt: ts };
         const winner = updatedFinal.homeScore > updatedFinal.awayScore ? updatedFinal.home : updatedFinal.away;
-        return { ...prev, finalMatch: updatedFinal, champion: winner };
+        const loser = updatedFinal.homeScore > updatedFinal.awayScore ? updatedFinal.away : updatedFinal.home;
+        return { ...prev, finalMatch: updatedFinal, champion: winner, runnerUp: loser, endedAt: ts };
       });
     }
     setOpenMatch(null);
@@ -327,6 +467,16 @@ export default function FifaApp({ code, onLeave }) {
               {presence} watching
             </span>
           )}
+          {champion != null && (() => {
+            const allMapped =
+              Array.isArray(rosterIds) &&
+              rosterIds.length === playerNames.length &&
+              rosterIds.every((id) => id != null);
+            if (!allMapped) return <span className="hof-status warn" title="One or more players were not in the roster">⚠ NOT IN ROSTER</span>;
+            if (saveError) return <span className="hof-status fail" title={saveError}>⚠ HOF NOT SAVED</span>;
+            if (savedTournamentId) return <span className="hof-status ok">✓ SAVED TO HOF</span>;
+            return <span className="hof-status">SAVING TO HOF…</span>;
+          })()}
           <button
             className={"room " + (copied ? "copied" : "")}
             onClick={copyLink}

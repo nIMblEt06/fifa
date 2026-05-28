@@ -21,6 +21,14 @@ export function readRoomFromUrl() {
   return { code, game: GAMES.includes(game) ? game : DEFAULT_GAME };
 }
 
+export function isHofRoute() {
+  return /^#\/hof/.test(window.location.hash);
+}
+
+export function navigateToHof() {
+  if (window.location.hash !== "#/hof") window.history.replaceState(null, "", "#/hof");
+}
+
 export function readCodeFromUrl() {
   const r = readRoomFromUrl();
   return r ? r.code : null;

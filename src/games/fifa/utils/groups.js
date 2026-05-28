@@ -46,30 +46,83 @@ export function groupSizes(n) {
 /**
  * Split player indexes into groups (sizes from groupSizes). Players are dealt
  * round-robin from a shuffled order, so groups are random and balanced.
+ *
+ * If `teamByIndex` is provided (map: playerIndex → team name), we try up to
+ * 50 random shuffles and keep the assignment that minimises the number of
+ * intra-group same-team pairs (best-effort: 0 if possible, else as few as
+ * we can find). Multiple players can share a team — when there aren't enough
+ * groups to separate them all, some duplicates remain.
+ *
  * Returns [{ id:"A", playerIndexes:[...], matches:[] }].
  */
-export function splitIntoGroups(playerIndexes, shuffle = defaultShuffle, rounds = 1) {
+export function splitIntoGroups(playerIndexes, shuffle = defaultShuffle, rounds = 1, teamByIndex = null) {
   const n = playerIndexes.length;
   const sizes = groupSizes(n);
   if (sizes.length === 0) return [];
 
-  const shuffled = shuffle(playerIndexes);
-  const groups = sizes.map((_, i) => ({
-    id: GROUP_LABELS[i],
-    playerIndexes: [],
-    matches: [],
-  }));
-
-  // Deal round-robin into groups, respecting per-group capacity. Larger groups
-  // come first, so deal in capacity order to keep the round-robin tidy.
-  let cursor = 0;
-  while (cursor < shuffled.length) {
-    for (let g = 0; g < groups.length && cursor < shuffled.length; g++) {
-      if (groups[g].playerIndexes.length < sizes[g]) {
-        groups[g].playerIndexes.push(shuffled[cursor++]);
+  const deal = (order) => {
+    const gs = sizes.map((_, i) => ({ id: GROUP_LABELS[i], playerIndexes: [], matches: [] }));
+    let cursor = 0;
+    while (cursor < order.length) {
+      for (let g = 0; g < gs.length && cursor < order.length; g++) {
+        if (gs[g].playerIndexes.length < sizes[g]) {
+          gs[g].playerIndexes.push(order[cursor++]);
+        }
       }
     }
+    return gs;
+  };
+
+  // Count same-team pairs that landed in the same group. Lower is better.
+  const clashScore = (gs) => {
+    if (!teamByIndex) return 0;
+    let score = 0;
+    for (const g of gs) {
+      const idxs = g.playerIndexes;
+      for (let i = 0; i < idxs.length; i++) {
+        for (let j = i + 1; j < idxs.length; j++) {
+          const ta = teamByIndex[idxs[i]];
+          const tb = teamByIndex[idxs[j]];
+          if (ta && tb && ta === tb) score++;
+        }
+      }
+    }
+    return score;
+  };
+
+  // Theoretical minimum: for each team T with k players, at least
+  // max(0, k - numGroups) duplicates are unavoidable in the same group
+  // (sum of C(c, 2) over team-group buckets; cheap lower bound via pigeonhole).
+  const lowerBound = (() => {
+    if (!teamByIndex) return 0;
+    const counts = new Map();
+    for (const i of playerIndexes) {
+      const t = teamByIndex[i];
+      if (!t) continue;
+      counts.set(t, (counts.get(t) || 0) + 1);
+    }
+    const G = sizes.length;
+    let lb = 0;
+    for (const k of counts.values()) {
+      const base = Math.floor(k / G);
+      const extra = k - base * G;
+      // `extra` groups hold (base+1) players of this team, the rest hold `base`.
+      lb += extra * (base * (base + 1)) / 2 + (G - extra) * (base * (base - 1)) / 2;
+    }
+    return lb;
+  })();
+
+  let groups;
+  let best = null;
+  let bestScore = Infinity;
+  const attempts = teamByIndex ? 50 : 1;
+  for (let a = 0; a < attempts; a++) {
+    const candidate = deal(shuffle(playerIndexes));
+    const score = clashScore(candidate);
+    if (score < bestScore) { best = candidate; bestScore = score; }
+    if (bestScore <= lowerBound) break; // can't do better
   }
+  groups = best;
 
   // Round-robin fixtures within each group. `rounds === 2` plays a return
   // leg with home/away swapped, so every pair plays twice.

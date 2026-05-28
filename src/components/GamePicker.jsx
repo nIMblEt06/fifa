@@ -1,3 +1,6 @@
+import { useMemo, useState } from "react";
+import { normalizeCode } from "../utils/room";
+
 // Landing page when no room is in the URL. Picks a game; we mint a code
 // and route to it.
 export default function GamePicker({ onPick, onOpenHof }) {
@@ -21,6 +24,17 @@ export default function GamePicker({ onPick, onOpenHof }) {
       blurb: "Poker-night buy-in tracker. Count the chips, settle the net to Splitwise.",
     },
   ];
+
+  const [customCode, setCustomCode] = useState("");
+  const [customGame, setCustomGame] = useState("fifa");
+  const normalized = useMemo(() => normalizeCode(customCode), [customCode]);
+  const canOpen = normalized.length >= 2;
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!canOpen) return;
+    onPick(customGame, normalized);
+  };
 
   return (
     <div className="app">
@@ -52,6 +66,40 @@ export default function GamePicker({ onPick, onOpenHof }) {
             </button>
           )}
         </div>
+
+        <form className="custom-room" onSubmit={submit}>
+          <div className="custom-room-label">OR OPEN A CUSTOM ROOM</div>
+          <div className="custom-room-row">
+            <input
+              className="custom-room-input"
+              type="text"
+              placeholder="el-crapico"
+              value={customCode}
+              onChange={(e) => setCustomCode(e.target.value)}
+              maxLength={32}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            <select
+              className="custom-room-game"
+              value={customGame}
+              onChange={(e) => setCustomGame(e.target.value)}
+            >
+              {games.map((g) => (
+                <option key={g.id} value={g.id}>{g.title}</option>
+              ))}
+            </select>
+            <button type="submit" className="custom-room-btn" disabled={!canOpen}>
+              OPEN →
+            </button>
+          </div>
+          {customCode && normalized !== customCode && (
+            <div className="custom-room-hint">
+              opens as <code>{normalized || "—"}</code>
+            </div>
+          )}
+        </form>
       </main>
     </div>
   );

@@ -33,6 +33,7 @@ function emptyState() {
   return {
     phase: PHASES.SETUP,
     playerNames: [],
+    teamSelections: [],   // parallel to playerNames; live-shared in TEAM_SELECT
     format: "single", // "single" | "groups"
     matchesPerPlayer: 4, // single only
     qualifiersPerGroup: 2, // groups only
@@ -263,6 +264,7 @@ export default function FifaApp({ code, onLeave }) {
     update({
       phase: PHASES.TEAM_SELECT,
       playerNames: names,
+      teamSelections: names.map(() => ""),
       format: chosen,
       matchesPerPlayer: mpp,
       qualifiersPerGroup: opts.qualifiersPerGroup ?? 2,
@@ -271,12 +273,53 @@ export default function FifaApp({ code, onLeave }) {
     });
   };
 
+  // ── TEAM_SELECT live editing ──────────────────────────────
+  // Picks are shared via room state so anyone with the link can pick for
+  // anyone — useful for big lobbies where one person is screensharing or
+  // people open the link on their own devices.
+  const handleTeamPick = (index, team) => {
+    update((prev) => {
+      const next = [...(prev.teamSelections || [])];
+      while (next.length < prev.playerNames.length) next.push("");
+      next[index] = team;
+      return { ...prev, teamSelections: next };
+    });
+  };
+
+  // Replace the participant in slot `index` (drop-out → substitute). Reset
+  // that slot's team pick since it's now a different player.
+  const handleReplacePlayer = (index, { name, rosterId }) => {
+    update((prev) => {
+      const names = [...prev.playerNames]; names[index] = name;
+      const ids = [...(prev.rosterIds || [])];
+      while (ids.length < names.length) ids.push(null);
+      ids[index] = rosterId ?? null;
+      const sels = [...(prev.teamSelections || [])];
+      while (sels.length < names.length) sels.push("");
+      sels[index] = "";
+      return { ...prev, playerNames: names, rosterIds: ids, teamSelections: sels };
+    });
+  };
+
+  const handleRemovePlayer = (index) => {
+    update((prev) => {
+      if ((prev.playerNames || []).length <= 2) return prev; // need ≥2
+      return {
+        ...prev,
+        playerNames: prev.playerNames.filter((_, i) => i !== index),
+        rosterIds: (prev.rosterIds || []).filter((_, i) => i !== index),
+        teamSelections: (prev.teamSelections || []).filter((_, i) => i !== index),
+      };
+    });
+  };
+
   const handleTeamsConfirmed = (teamSelections) => {
     const assigned = playerNames.map((name, i) => ({ name, team: teamSelections[i] }));
     const now = Date.now();
 
     if (isGroups) {
-      const built = splitIntoGroups(assigned.map((_, i) => i), undefined, groupRounds);
+      const teamByIndex = Object.fromEntries(assigned.map((p, i) => [i, p.team]));
+      const built = splitIntoGroups(assigned.map((_, i) => i), undefined, groupRounds, teamByIndex);
       if (built.length === 0) {
         window.alert("Could not split players into groups. Try a different player count.");
         return;
@@ -497,7 +540,12 @@ export default function FifaApp({ code, onLeave }) {
         {phase === PHASES.TEAM_SELECT && (
           <TeamSelect
             playerNames={playerNames}
+            rosterIds={rosterIds}
+            selections={state.teamSelections}
             teams={teams}
+            onPick={handleTeamPick}
+            onReplace={handleReplacePlayer}
+            onRemove={handleRemovePlayer}
             onConfirm={handleTeamsConfirmed}
           />
         )}

@@ -18,7 +18,7 @@ import { startGame, applyAsk, applyDeclare, redactFor, healState, defaultTeams }
 export class RoomDO extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
-    const m = url.pathname.match(/^\/api\/room\/[A-Z0-9]{2,8}\/(state|reaction|presence|ws)\/?$/i);
+    const m = url.pathname.match(/^\/api\/room\/[A-Za-z0-9-]{2,32}\/(state|reaction|presence|ws)\/?$/);
     const action = m ? m[1].toLowerCase() : null;
 
     if (request.method === "OPTIONS") {

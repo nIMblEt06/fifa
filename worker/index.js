@@ -4,7 +4,7 @@
 
 export { RoomDO } from "./RoomDO.js";
 
-const ROUTE = /^\/api\/room\/([A-Z0-9]{2,8})\/.+$/i;
+const ROUTE = /^\/api\/room\/([A-Za-z0-9-]{2,32})\/.+$/;
 const SPLITWISE_BASE = "https://secure.splitwise.com/api/v3.0";
 
 export default {
@@ -51,7 +51,7 @@ export default {
 
     const m = url.pathname.match(ROUTE);
     if (m) {
-      const code = m[1].toUpperCase();
+      const code = m[1].toLowerCase();
       const id = env.ROOMS.idFromName(code);
       const stub = env.ROOMS.get(id);
       return stub.fetch(request);

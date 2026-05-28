@@ -1296,6 +1296,43 @@ tbody tr.qualified td:nth-child(1) {
   color: var(--hot-ink);
 }
 
+.team-select-hint {
+  font-size: 13px;
+  opacity: 0.7;
+  margin: -0.4rem 0 1rem;
+  max-width: 60ch;
+}
+.team-select-swap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+.team-select-swap .roster-combobox { flex: 1; }
+.row-actions {
+  display: flex;
+  gap: 4px;
+}
+.row-icon-btn {
+  background: transparent;
+  color: var(--paper);
+  border: 1px solid var(--dim);
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.row-icon-btn:hover {
+  background: var(--hot);
+  border-color: var(--hot);
+  color: var(--hot-ink);
+}
+
 /* Stretch team-select rows so the combobox has room */
 .team-select-row {
   flex-wrap: wrap;
@@ -1359,6 +1396,77 @@ tbody tr.qualified td:nth-child(1) {
   font-weight: 800;
   letter-spacing: 1px;
   font-size: 12px;
+}
+
+.custom-room {
+  margin-top: 8px;
+  padding: 18px 0 24px;
+  border-top: 1px solid var(--dim);
+}
+.custom-room-label {
+  font-family: var(--mono, inherit);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  opacity: 0.7;
+  margin-bottom: 10px;
+}
+.custom-room-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.custom-room-input {
+  flex: 1 1 220px;
+  background: var(--ink);
+  color: var(--paper);
+  border: 2px solid var(--paper);
+  padding: 10px 12px;
+  font-family: var(--mono, inherit);
+  font-size: 15px;
+  letter-spacing: 1px;
+}
+.custom-room-input::placeholder { color: var(--paper); opacity: 0.4; }
+.custom-room-input:focus { outline: none; border-color: var(--hot); }
+.custom-room-game {
+  background: var(--ink);
+  color: var(--paper);
+  border: 2px solid var(--paper);
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+}
+.custom-room-btn {
+  background: var(--paper);
+  color: var(--ink);
+  border: 2px solid var(--paper);
+  padding: 10px 18px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+.custom-room-btn:hover:not(:disabled) {
+  background: var(--hot);
+  border-color: var(--hot);
+  color: var(--hot-ink);
+}
+.custom-room-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.custom-room-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.custom-room-hint code {
+  font-family: var(--mono, monospace);
+  background: var(--dim);
+  padding: 1px 6px;
+  letter-spacing: 1px;
 }
 
 /* ── Set game ─────────────────────────────────────────────────── */

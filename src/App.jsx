@@ -39,8 +39,8 @@ export default function App() {
     document.title = title;
   }, [route, onHof]);
 
-  const handlePick = useCallback((game) => {
-    const code = generateCode(4);
+  const handlePick = useCallback((game, codeOverride = null) => {
+    const code = codeOverride || generateCode(4);
     writeRoomToUrl(code, game);
     setRoute({ code, game });
     setOnHof(false);

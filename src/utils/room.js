@@ -1,9 +1,14 @@
 // Room codes live in the URL hash: #/r/CODE[/GAME]. GAME is one of
 // "fifa" | "lit" (default "fifa" for back-compat with pre-hub rooms).
+//
+// Codes are case-insensitive ([A-Za-z0-9-]{2,32}) — display casing is
+// whatever the user typed; the worker lowercases before keying the DO so
+// EL-CRAPICO and el-crapico hit the same room.
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I, O, 0, 1 — readable
 const GAMES = ["fifa", "lit", "poker"];
 const DEFAULT_GAME = "fifa";
+export const CODE_RE = /^[A-Za-z0-9-]{2,32}$/;
 
 export function generateCode(len = 4) {
   let out = "";
@@ -13,10 +18,23 @@ export function generateCode(len = 4) {
   return out;
 }
 
+// Clean a user-typed code: strip disallowed chars, collapse runs of hyphens,
+// trim hyphens from the ends. Casing is preserved. Returns "" if the result
+// is too short.
+export function normalizeCode(raw) {
+  const cleaned = String(raw || "")
+    .replace(/[^A-Za-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  if (cleaned.length < 2) return "";
+  return cleaned;
+}
+
 export function readRoomFromUrl() {
-  const m = window.location.hash.match(/^#\/r\/([A-Z0-9]{2,8})(?:\/([a-z]+))?/i);
+  const m = window.location.hash.match(/^#\/r\/([A-Za-z0-9-]{2,32})(?:\/([a-z]+))?/);
   if (!m) return null;
-  const code = m[1].toUpperCase();
+  const code = m[1];
   const game = (m[2] || DEFAULT_GAME).toLowerCase();
   return { code, game: GAMES.includes(game) ? game : DEFAULT_GAME };
 }

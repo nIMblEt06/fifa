@@ -1296,6 +1296,33 @@ tbody tr.qualified td:nth-child(1) {
   color: var(--hot-ink);
 }
 
+.room-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 80px 20px;
+  opacity: 0.85;
+}
+.room-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--dim);
+  border-top-color: var(--hot);
+  border-radius: 50%;
+  animation: room-loading-spin 0.9s linear infinite;
+}
+.room-loading-label {
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 2px;
+}
+@keyframes room-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
 .team-select-hint {
   font-size: 13px;
   opacity: 0.7;

@@ -17,6 +17,10 @@ export function useRoom(code, opts = {}) {
   const [presence, setPresence] = useState(0);
   const [reactions, setReactions] = useState([]);
   const [connected, setConnected] = useState(false);
+  // `ready` flips true after the first server message (hello or state) arrives.
+  // Lets callers distinguish "no remote state because we're still loading" from
+  // "no remote state because this is a fresh room".
+  const [ready, setReady] = useState(false);
   const [error, setError] = useState(null);
   const lastSentRef = useRef(null);
   const wsRef = useRef(null);
@@ -75,8 +79,10 @@ export function useRoom(code, opts = {}) {
           const msg = JSON.parse(e.data);
           if (msg.type === "hello") {
             if (typeof msg.presence === "number") setPresence(msg.presence);
+            setReady(true);
           } else if (msg.type === "state") {
             setState(msg.data);
+            setReady(true);
           } else if (msg.type === "presence") {
             if (typeof msg.count === "number") setPresence(msg.count);
           } else if (msg.type === "reaction") {
@@ -146,5 +152,5 @@ export function useRoom(code, opts = {}) {
     [code]
   );
 
-  return { state, presence, reactions, connected, error, dismissError, sendState, sendAction, sendReaction };
+  return { state, presence, reactions, connected, ready, error, dismissError, sendState, sendAction, sendReaction };
 }

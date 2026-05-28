@@ -56,7 +56,7 @@ function emptyState() {
 }
 
 export default function FifaApp({ code, onLeave }) {
-  const { state: remoteState, presence, reactions, sendState, sendReaction, connected } = useRoom(code);
+  const { state: remoteState, presence, reactions, sendState, sendReaction, connected, ready } = useRoom(code);
   const { teams, byName: teamsByName } = useTeams();
 
   const state = { ...emptyState(), ...(remoteState ?? {}) };
@@ -534,10 +534,17 @@ export default function FifaApp({ code, onLeave }) {
         <div className="conn-state">RECONNECTING…</div>
       )}
 
-      <main className={useAside ? "with-aside" : ""}>
-        {phase === PHASES.SETUP && <PlayerSetup onStart={handleStart} />}
+      <main className={useAside && ready ? "with-aside" : ""}>
+        {!ready && (
+          <div className="room-loading">
+            <div className="room-loading-spinner" aria-hidden />
+            <div className="room-loading-label">LOADING ROOM {code}…</div>
+          </div>
+        )}
 
-        {phase === PHASES.TEAM_SELECT && (
+        {ready && phase === PHASES.SETUP && <PlayerSetup onStart={handleStart} />}
+
+        {ready && phase === PHASES.TEAM_SELECT && (
           <TeamSelect
             playerNames={playerNames}
             rosterIds={rosterIds}
@@ -550,7 +557,7 @@ export default function FifaApp({ code, onLeave }) {
           />
         )}
 
-        {phase === PHASES.GROUP && (
+        {ready && phase === PHASES.GROUP && (
           isGroups ? (
             <div className="group-phase-stack">
               <GroupStage
@@ -599,7 +606,7 @@ export default function FifaApp({ code, onLeave }) {
           )
         )}
 
-        {phase === PHASES.KNOCKOUT && (
+        {ready && phase === PHASES.KNOCKOUT && (
           <>
             <div>
               <KnockoutBracket

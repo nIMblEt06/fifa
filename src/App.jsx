@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import GamePicker from "./components/GamePicker";
 import FifaApp from "./games/fifa/FifaApp";
 import LitApp from "./games/lit/LitApp";
+import PokerApp from "./games/poker/PokerApp";
 import { generateCode, readRoomFromUrl, writeRoomToUrl, clearRoomFromUrl } from "./utils/room";
 
 // Top-level router. The URL hash decides what we render:
@@ -25,7 +26,9 @@ export default function App() {
       ? "LOCAL / GAMING HUB"
       : route.game === "lit"
         ? `LIT · ${route.code}`
-        : `FIFA · ${route.code}`;
+        : route.game === "poker"
+          ? `POKER · ${route.code}`
+          : `FIFA · ${route.code}`;
     document.title = title;
   }, [route]);
 
@@ -42,5 +45,6 @@ export default function App() {
 
   if (!route) return <GamePicker onPick={handlePick} />;
   if (route.game === "lit") return <LitApp code={route.code} onLeave={handleLeave} />;
+  if (route.game === "poker") return <PokerApp code={route.code} onLeave={handleLeave} />;
   return <FifaApp code={route.code} onLeave={handleLeave} />;
 }

@@ -2,7 +2,7 @@
 // "fifa" | "lit" (default "fifa" for back-compat with pre-hub rooms).
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I, O, 0, 1 — readable
-const GAMES = ["fifa", "lit"];
+const GAMES = ["fifa", "lit", "poker"];
 const DEFAULT_GAME = "fifa";
 
 export function generateCode(len = 4) {

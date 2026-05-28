@@ -74,11 +74,12 @@ export class RoomDO extends DurableObject {
       //     joiners can see who's seated without first having to claim a seat.
       const state = await this.ctx.storage.get("state");
       const gameType = state?.gameType || "fifa";
-      if (state && gameType === "fifa") {
-        try { server.send(JSON.stringify({ type: "state", data: state })); } catch (_e) { void _e; }
-      } else if (gameType === "lit") {
+      if (gameType === "lit") {
         const payload = buildLitSnapshot(state, /* viewerId */ null);
         try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+      } else if (state) {
+        // Client-authoritative games (FIFA, Poker, …): relay the raw blob.
+        try { server.send(JSON.stringify({ type: "state", data: state })); } catch (_e) { void _e; }
       }
       this.broadcastExcept(server, { type: "presence", count: presence });
 

@@ -2567,3 +2567,49 @@ tbody tr.qualified td:nth-child(1) {
   color: var(--mute);
   font-style: italic;
 }
+
+.activity-log {
+  margin-top: 18px;
+  border-top: 2px solid var(--paper);
+  padding-top: 14px;
+}
+.activity-log-title {
+  font-weight: 800;
+  letter-spacing: 1px;
+  font-size: 13px;
+  margin-bottom: 10px;
+  color: var(--paper);
+}
+.activity-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.log-row {
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 6px 10px;
+  border-left: 3px solid var(--mute);
+  border-bottom: 1px dashed rgba(244, 241, 234, 0.12);
+  color: var(--paper);
+  word-break: break-word;
+}
+.log-row:last-child { border-bottom: none; }
+.log-row.log-hit { border-left-color: var(--hot); }
+.log-row.log-miss { border-left-color: var(--mute); opacity: 0.85; }
+.log-row.log-set { border-left-color: var(--warn); }
+.log-rank {
+  display: inline-block;
+  min-width: 1.5em;
+  text-align: center;
+  padding: 0 4px;
+  margin: 0 1px;
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 480px) {
+  .activity-log { margin-top: 14px; padding-top: 10px; }
+  .log-row { font-size: 12px; padding: 5px 8px; }
+}

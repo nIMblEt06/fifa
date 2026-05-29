@@ -376,6 +376,8 @@ function Table({ view, myTurn, onAsk, onDeclare, onPlayAgain, me }) {
         )}
       </div>
 
+      <ActivityLog log={view.log} players={players} me={me} />
+
       {declareOpen && (
         <DeclareModal
           claimedRanks={claimedRanks}
@@ -470,6 +472,102 @@ function DeclareModal({ claimedRanks, onCancel, onConfirm }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ActivityLog({ log, players, me }) {
+  if (!log || log.length === 0) return null;
+  const who = (id) => (id === me ? "You" : nameOf(players, id));
+  const verb = (id, youForm, otherForm) => (id === me ? youForm : otherForm);
+
+  const visible = log.filter(
+    (e) => e.kind !== "start" && e.kind !== "auto_draw"
+  );
+  const latest = visible[visible.length - 1];
+  const rows = (latest ? [latest] : [])
+    .map((e, i) => {
+      let line = null;
+      let cls = "log-row";
+      switch (e.kind) {
+        case "ask_hit":
+          line = (
+            <>
+              <strong>{who(e.from)}</strong> asked <strong>{who(e.to)}</strong> for{" "}
+              <span className="log-rank">{e.rank}</span> — got{" "}
+              <strong>{e.count}</strong> card{e.count === 1 ? "" : "s"}
+              {", keeps turn"}
+            </>
+          );
+          cls += " log-hit";
+          break;
+        case "ask_miss":
+        case "ask_miss_lucky":
+        case "ask_miss_no_deck": {
+          const drawSuffix =
+            e.kind === "ask_miss_no_deck"
+              ? "no deck left, turn passes"
+              : e.kind === "ask_miss_lucky"
+                ? `drew ${e.drawn || `the ${e.rank}`} from deck, keeps turn`
+                : e.drawn
+                  ? `${verb(e.from, "you", "they")} drew ${e.drawn} from deck, turn passes`
+                  : "drew from deck, turn passes";
+          line = (
+            <>
+              <strong>{who(e.from)}</strong> asked <strong>{who(e.to)}</strong> for{" "}
+              <span className="log-rank">{e.rank}</span> — miss, {drawSuffix}
+            </>
+          );
+          cls += " log-miss";
+          break;
+        }
+        case "set_collected":
+          line = (
+            <>
+              <strong>{who(e.by)}</strong> completed set{" "}
+              <span className="log-rank">{e.rank}</span>
+              {e.team ? <> for <strong>TEAM {e.team}</strong></> : null}
+            </>
+          );
+          cls += " log-set";
+          break;
+        case "declare_hit":
+          line = (
+            <>
+              <strong>{who(e.by)}</strong> declared{" "}
+              <span className="log-rank">{e.rank}</span> —{" "}
+              <strong>TEAM {e.team}</strong> wins the set
+            </>
+          );
+          cls += " log-set";
+          break;
+        case "declare_miss":
+          line = (
+            <>
+              <strong>{who(e.by)}</strong> declared{" "}
+              <span className="log-rank">{e.rank}</span> — missed,{" "}
+              <strong>TEAM {e.awardedTo}</strong> takes it
+            </>
+          );
+          cls += " log-miss";
+          break;
+        default:
+          return null;
+      }
+      return (
+        <li key={(e.t || 0) + ":" + i} className={cls}>
+          {line}
+        </li>
+      );
+    })
+    .filter(Boolean);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="activity-log">
+      <div className="activity-log-title">LAST MOVE</div>
+      <ul className="activity-log-list">{rows}</ul>
     </div>
   );
 }

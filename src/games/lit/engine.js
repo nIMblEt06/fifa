@@ -135,7 +135,15 @@ function collectInto(state, playerId) {
   for (const [r, n] of byRank.entries()) {
     if (n >= SET_SIZE) {
       state.hands[playerId] = state.hands[playerId].filter((c) => rankOf(c) !== r);
-      awardRank(state, r, state.mode === "team" ? teamOf(state, playerId) : playerId);
+      const owner = state.mode === "team" ? teamOf(state, playerId) : playerId;
+      awardRank(state, r, owner);
+      state.log.push({
+        t: Date.now(),
+        kind: "set_collected",
+        by: playerId,
+        rank: r,
+        team: state.mode === "team" ? owner : null,
+      });
     }
   }
 }
@@ -300,11 +308,22 @@ function maybeFinish(state) {
 //         (`opponents` becomes the OPPOSING-team players only)
 export function redactFor(state, viewerId) {
   if (!state) return null;
+  const recent = state.log.slice(-30).map((e) => {
+    // A draw that matched the asked rank ("lucky") is public — the rank is
+    // already the asked rank, so everyone sees the card. Any other draw is
+    // private to the drawer; strip the card for other viewers.
+    const isPublic = e.kind === "ask_miss_lucky";
+    if (e.drawn && !isPublic && e.from !== viewerId && e.who !== viewerId) {
+      const { drawn: _d, ...rest } = e;
+      return rest;
+    }
+    return e;
+  });
   const base = {
     deckCount: state.deck.length,
     turn: state.turn,
     winner: state.winner,
-    log: state.log.slice(-20),
+    log: recent,
     players: state.players.map((p) => ({
       ...p,
       teamId: state.mode === "team" ? teamOf(state, p.id) : null,

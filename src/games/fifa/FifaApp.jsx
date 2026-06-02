@@ -38,6 +38,7 @@ function emptyState() {
     matchesPerPlayer: 4, // single only
     qualifiersPerGroup: 2, // groups only
     groupRounds: 1, // groups only — 1 = single round-robin, 2 = home & away
+    numGroups: null, // groups only — null = auto (floor(N/3))
     players: [],
     groups: [], // groups: [{ id, playerIndexes, matches }]
     groupMatches: [], // single (unchanged)
@@ -77,6 +78,7 @@ export default function FifaApp({ code, onLeave }) {
     matchesPerPlayer,
     qualifiersPerGroup,
     groupRounds,
+    numGroups,
     players,
     groups,
     groupMatches,
@@ -269,6 +271,7 @@ export default function FifaApp({ code, onLeave }) {
       matchesPerPlayer: mpp,
       qualifiersPerGroup: opts.qualifiersPerGroup ?? 2,
       groupRounds: opts.groupRounds === 2 ? 2 : 1,
+      numGroups: opts.numGroups ?? null,
       rosterIds: Array.isArray(opts.rosterIds) ? opts.rosterIds : [],
     });
   };
@@ -319,7 +322,7 @@ export default function FifaApp({ code, onLeave }) {
 
     if (isGroups) {
       const teamByIndex = Object.fromEntries(assigned.map((p, i) => [i, p.team]));
-      const built = splitIntoGroups(assigned.map((_, i) => i), undefined, groupRounds, teamByIndex);
+      const built = splitIntoGroups(assigned.map((_, i) => i), undefined, groupRounds, teamByIndex, numGroups);
       if (built.length === 0) {
         window.alert("Could not split players into groups. Try a different player count.");
         return;
@@ -525,7 +528,7 @@ export default function FifaApp({ code, onLeave }) {
             onClick={copyLink}
             title="Copy share link"
           >
-            {copied ? "LINK COPIED" : `ROOM ${code}`}
+            {copied ? "LINK COPIED" : code}
           </button>
         </div>
       </header>

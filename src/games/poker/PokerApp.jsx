@@ -293,7 +293,7 @@ export default function PokerApp({ code, onLeave }) {
             </span>
           )}
           <button className={"room " + (copied ? "copied" : "")} onClick={copyLink} title="Copy share link">
-            {copied ? "LINK COPIED" : `ROOM ${code}`}
+            {copied ? "LINK COPIED" : code}
           </button>
         </div>
       </header>

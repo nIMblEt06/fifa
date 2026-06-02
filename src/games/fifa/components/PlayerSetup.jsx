@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { groupSizes } from "../utils/groups";
+import { groupSizes, groupCountOptions, knockoutPath } from "../utils/groups";
 import RosterCombobox from "./RosterCombobox";
 
 const GROUP_THRESHOLD = 6;
@@ -12,6 +12,9 @@ export default function PlayerSetup({ onStart }) {
   const [qualifiersPerGroup, setQualifiersPerGroup] = useState(2);
   const [groupRounds, setGroupRounds] = useState(1);
   const [formatChoice, setFormatChoice] = useState("groups");
+  // null = auto (floor(N/3)); a number = explicit user choice. Clamped against
+  // the valid options for the current player count below.
+  const [groupCountChoice, setGroupCountChoice] = useState(null);
 
   const [roster, setRoster] = useState([]);
   const [rosterError, setRosterError] = useState(null);
@@ -71,9 +74,16 @@ export default function PlayerSetup({ onStart }) {
   const N = players.length;
   const groupsAvailable = N >= GROUP_THRESHOLD;
   const isGroups = groupsAvailable && formatChoice === "groups";
-  const sizes = isGroups ? groupSizes(N) : [];
-  const numGroups = sizes.length;
-  const totalQualifiers = qualifiersPerGroup * numGroups;
+  const countOptions = isGroups ? groupCountOptions(N) : [];
+  // Use the explicit choice only when it's still valid for this player count;
+  // otherwise fall back to the default (floor(N/3), always a valid option).
+  const numGroups =
+    groupCountChoice != null && countOptions.includes(groupCountChoice)
+      ? groupCountChoice
+      : Math.floor(N / 3);
+  const sizes = isGroups ? groupSizes(N, numGroups) : [];
+  const totalQualifiers = qualifiersPerGroup * sizes.length;
+  const { rounds: koRounds, byes: koByes } = knockoutPath(totalQualifiers);
 
   const maxM = Math.max(2, N - 1);
   const safeM = Math.min(matchesPerPlayer, maxM);
@@ -83,7 +93,7 @@ export default function PlayerSetup({ onStart }) {
     const names = players.map((p) => p.name);
     const rosterIds = players.map((p) => p.rosterId ?? null);
     if (isGroups) {
-      onStart(names, safeM, { format: "groups", qualifiersPerGroup, groupRounds, rosterIds });
+      onStart(names, safeM, { format: "groups", qualifiersPerGroup, groupRounds, numGroups, rosterIds });
     } else {
       onStart(names, safeM, { format: "league", rosterIds });
     }
@@ -156,6 +166,30 @@ export default function PlayerSetup({ onStart }) {
               </span>
             ))}
           </div>
+          {countOptions.length > 1 && (
+            <>
+              <label>Number of groups</label>
+              <div className="qualifier-row">
+                <div className="segmented" role="radiogroup" aria-label="Number of groups">
+                  {countOptions.map((g) => (
+                    <button
+                      key={g}
+                      type="button"
+                      role="radio"
+                      aria-checked={g === numGroups}
+                      className={"seg-btn " + (g === numGroups ? "active" : "")}
+                      onClick={() => setGroupCountChoice(g)}
+                    >
+                      {g}
+                    </button>
+                  ))}
+                </div>
+                <span className="match-total">
+                  {sizes.join(" · ")} PER GROUP
+                </span>
+              </div>
+            </>
+          )}
           <label>Qualifiers per group</label>
           <div className="qualifier-row">
             <div className="segmented" role="radiogroup" aria-label="Qualifiers per group">
@@ -194,6 +228,22 @@ export default function PlayerSetup({ onStart }) {
               {groupRounds === 2 ? "HOME & AWAY" : "SINGLE LEG"}
             </span>
           </div>
+          {koRounds.length > 0 && (
+            <>
+              <label>Knockout bracket</label>
+              <div className="ko-path">
+                {koRounds.map((name, i) => (
+                  <span key={name} className="ko-step">
+                    {i > 0 && <span className="ko-arrow" aria-hidden="true">→</span>}
+                    <span className="group-chip">{name}</span>
+                  </span>
+                ))}
+                {koByes > 0 && (
+                  <span className="match-total">{koByes} {koByes === 1 ? "BYE" : "BYES"}</span>
+                )}
+              </div>
+            </>
+          )}
           <p className="tap-hint" style={{ marginTop: "0.4rem", textAlign: "left" }}>
             Each group plays a {groupRounds === 2 ? "double" : "single"} round-robin
             ({groupRounds === 2 ? "every pair plays twice with home/away swapped" : "every pair plays once"}).

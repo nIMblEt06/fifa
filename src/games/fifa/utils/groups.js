@@ -24,23 +24,48 @@ export function nextPow2(n) {
   return p;
 }
 
+// Bounds on per-group size when offering alternative group counts. The default
+// (floor(N/3)) always yields groups of 3–4; allowing up to 5 lets e.g. 10
+// players split into two groups of five.
+export const MIN_GROUP_SIZE = 3;
+export const MAX_GROUP_SIZE = 5;
+
 /**
- * Compute group sizes for N players. numGroups = floor(N/3); sizes are as even
- * as possible, each 3 or 4, differing by at most 1, summing to N.
+ * Compute group sizes for N players split into `numGroups` groups. Sizes are as
+ * even as possible, differing by at most 1, summing to N (larger groups first).
+ * When `numGroups` is omitted it defaults to floor(N/3), giving groups of 3–4.
  * Examples: 6→[3,3], 7→[4,3], 8→[4,4], 9→[3,3,3], 10→[4,3,3], 11→[4,4,3],
- *           12→[3,3,3,3], 13→[4,3,3,3], 16→[4,3,3,3,3].
- * Returns [] if N < 6 (single-group territory).
+ *           12→[3,3,3,3]; 10 with numGroups=2 → [5,5].
+ * Returns [] if N < 6 (single-group territory) or numGroups < 1.
  */
-export function groupSizes(n) {
+export function groupSizes(n, numGroups) {
   if (n < 6) return [];
-  const numGroups = Math.floor(n / 3);
-  const base = Math.floor(n / numGroups);
-  const extra = n - base * numGroups; // this many groups get one more
+  const g = numGroups ?? Math.floor(n / 3);
+  if (g < 1) return [];
+  const base = Math.floor(n / g);
+  const extra = n - base * g; // this many groups get one more
   const sizes = [];
-  for (let i = 0; i < numGroups; i++) {
+  for (let i = 0; i < g; i++) {
     sizes.push(base + (i < extra ? 1 : 0)); // larger groups first
   }
   return sizes;
+}
+
+/**
+ * Valid group-count options for N players: every group count whose resulting
+ * sizes stay within [MIN_GROUP_SIZE, MAX_GROUP_SIZE]. The default floor(N/3) is
+ * always included (its groups are 3–4). Returns [] if N < 6.
+ * Examples: 6→[2], 8→[2], 10→[2,3], 12→[3,4], 15→[3,4,5].
+ */
+export function groupCountOptions(n) {
+  if (n < 6) return [];
+  const opts = [];
+  for (let g = 1; g <= Math.floor(n / MIN_GROUP_SIZE); g++) {
+    const largest = Math.ceil(n / g);
+    const smallest = Math.floor(n / g);
+    if (largest <= MAX_GROUP_SIZE && smallest >= MIN_GROUP_SIZE) opts.push(g);
+  }
+  return opts;
 }
 
 /**
@@ -55,9 +80,9 @@ export function groupSizes(n) {
  *
  * Returns [{ id:"A", playerIndexes:[...], matches:[] }].
  */
-export function splitIntoGroups(playerIndexes, shuffle = defaultShuffle, rounds = 1, teamByIndex = null) {
+export function splitIntoGroups(playerIndexes, shuffle = defaultShuffle, rounds = 1, teamByIndex = null, numGroups = null) {
   const n = playerIndexes.length;
-  const sizes = groupSizes(n);
+  const sizes = groupSizes(n, numGroups ?? undefined);
   if (sizes.length === 0) return [];
 
   const deal = (order) => {
@@ -216,6 +241,22 @@ const ROUND_NAMES = {
 
 export function roundName(slots) {
   return ROUND_NAMES[slots] || `Round of ${slots}`;
+}
+
+/**
+ * Describe the knockout bracket `qualifiers` players would produce: the ordered
+ * round names (first round → Final) and how many top seeds get a first-round
+ * bye (bracket size = nextPow2(Q), so byes = size - Q).
+ * Returns { rounds: [name, …], byes, size }; rounds is [] if Q < 2.
+ * Examples: 2→{rounds:["Final"],byes:0}; 4→["Semi-Finals","Final"];
+ *           5→{rounds:["Quarter-Finals","Semi-Finals","Final"],byes:3}.
+ */
+export function knockoutPath(qualifiers) {
+  if (qualifiers < 2) return { rounds: [], byes: 0, size: 0 };
+  const size = nextPow2(qualifiers);
+  const rounds = [];
+  for (let slots = size; slots >= 2; slots /= 2) rounds.push(roundName(slots));
+  return { rounds, byes: size - qualifiers, size };
 }
 
 /**

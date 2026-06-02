@@ -138,7 +138,8 @@ button { font-family: inherit; }
 .masthead-meta {
   display: flex;
   align-items: center;
-  gap: 1.25rem;
+  flex-wrap: wrap;          /* wrap whole chips, never the text inside them */
+  gap: 0.6rem 1.25rem;
   font-family: var(--mono);
   font-size: 0.7rem;
   text-transform: uppercase;
@@ -147,6 +148,9 @@ button { font-family: inherit; }
 }
 
 .masthead-meta .room {
+  display: inline-flex;     /* center the label so every chip is the same height */
+  align-items: center;
+  min-height: 1.9rem;
   color: var(--paper);
   background: var(--dim);
   padding: 0.3rem 0.55rem;
@@ -154,6 +158,7 @@ button { font-family: inherit; }
   cursor: pointer;
   font-weight: 700;
   letter-spacing: 0.12em;
+  white-space: nowrap;
 }
 .masthead-meta .room:hover { background: var(--hot); color: var(--hot-ink); border-color: var(--hot); }
 .masthead-meta .room.copied { background: var(--live); color: var(--ink); border-color: var(--live); }
@@ -1007,6 +1012,45 @@ tbody tr.qualified td:nth-child(1) {
   to { opacity: 1; transform: translate(-50%, 0); }
 }
 
+/* Minimalistic floating alert when someone makes a set. */
+.set-alert {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  max-width: min(90vw, 30rem);
+  padding: 0.55rem 0.85rem;
+  background: var(--ink);
+  border: 2px solid var(--hot);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 60;
+  animation: set-alert-in 0.2s ease-out;
+}
+.set-alert-rank {
+  min-width: 1.5em;
+  text-align: center;
+  padding: 0 0.35rem;
+  background: var(--hot);
+  color: var(--hot-ink);
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+.set-alert-text strong { color: var(--hot); }
+
+@keyframes set-alert-in {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
 /* ── Misc ─────────────────────────────────────────────────── */
 
 .error {
@@ -1542,6 +1586,51 @@ tbody tr.qualified td:nth-child(1) {
 .muted { opacity: 0.55; }
 
 .set-table { padding: 16px 0; }
+
+/* Turn strip: everyone listed; current turn in white, the rest greyed,
+   and you in pink when it's your move. */
+.players-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.player-pip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid var(--dim);
+  color: var(--mute);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.player-pip-name { font-weight: 700; text-transform: uppercase; }
+.player-pip-you { opacity: 0.55; font-weight: 400; }
+.player-pip-cards {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+.player-pip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+/* Whoever's turn it is: white and outlined. */
+.player-pip.is-turn {
+  color: var(--paper);
+  border-color: var(--paper);
+}
+/* Your turn: pink, so attention lands on you. */
+.player-pip.is-mine-turn {
+  color: var(--hot);
+  border-color: var(--hot);
+  box-shadow: inset 0 0 0 1px var(--hot);
+}
+
 .set-status {
   border-bottom: 2px solid var(--paper);
   padding-bottom: 8px;
@@ -2321,6 +2410,27 @@ tbody tr.qualified td:nth-child(1) {
   display: flex;
   align-items: center;
   gap: 0.9rem;
+}
+
+/* Knockout-shape preview: round chips joined by arrows, plus a byes note. */
+.ko-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.ko-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ko-arrow {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--mute);
 }
 
 /* Roster picker reuses the .combobox / .combo-* styles. The trigger here

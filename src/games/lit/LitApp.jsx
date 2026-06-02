@@ -52,6 +52,40 @@ export default function LitApp({ code, onLeave }) {
     }
   }, [connected, view, me, sendAction]);
 
+  // ── Floating "set made" alert ──────────────────────────────
+  // Pops a minimalistic toast whenever anyone completes or declares a set.
+  // Detection is the React "adjust state during render" pattern: lastSeenSig
+  // holds the signature of the most recent set we've reacted to. We baseline it
+  // on the first real view (so joining mid-game never replays history), then
+  // alert once per genuinely new set. `undefined` = not yet baselined.
+  const [setAlert, setSetAlert] = useState(null);
+  const [lastSeenSig, setLastSeenSig] = useState(undefined);
+
+  const latestSet = findLatestSet(view?.log);
+  const setSig = latestSet
+    ? `${latestSet.t || 0}:${latestSet.kind}:${latestSet.rank}:${latestSet.by}`
+    : null;
+  if (view && lastSeenSig === undefined) {
+    setLastSeenSig(setSig); // first real view → baseline, no alert
+  } else if (view && setSig && setSig !== lastSeenSig) {
+    setLastSeenSig(setSig);
+    setSetAlert({
+      key: setSig,
+      who: latestSet.by === me
+        ? "You"
+        : (view?.players?.find((p) => p.id === latestSet.by)?.name ?? "Someone"),
+      rank: latestSet.rank,
+      team: latestSet.team || null,
+      declared: latestSet.kind === "declare_hit",
+    });
+  }
+
+  useEffect(() => {
+    if (!setAlert) return;
+    const id = setTimeout(() => setSetAlert(null), 2600);
+    return () => clearTimeout(id);
+  }, [setAlert]);
+
   return (
     <div className="app">
       <header className="masthead">
@@ -80,7 +114,7 @@ export default function LitApp({ code, onLeave }) {
             onClick={copyLink}
             title="Copy share link"
           >
-            {copied ? "LINK COPIED" : `ROOM ${code}`}
+            {copied ? "LINK COPIED" : code}
           </button>
         </div>
       </header>
@@ -91,6 +125,16 @@ export default function LitApp({ code, onLeave }) {
         <div className="error-toast" role="alert" onClick={dismissError}>
           <span className="error-toast-msg">{error.message}</span>
           <button className="error-toast-x" aria-label="Dismiss">×</button>
+        </div>
+      )}
+
+      {setAlert && (
+        <div className="set-alert" role="status" key={setAlert.key}>
+          <span className="set-alert-rank">{setAlert.rank}</span>
+          <span className="set-alert-text">
+            {setAlert.who} {setAlert.declared ? "declared the set" : "completed a set"}
+            {setAlert.team ? <> · <strong>TEAM {setAlert.team}</strong></> : null}
+          </span>
         </div>
       )}
 
@@ -272,8 +316,20 @@ function Table({ view, myTurn, onAsk, onDeclare, onPlayAgain, me }) {
     ? new Set([...(view.teamSets?.A || []), ...(view.teamSets?.B || [])])
     : new Set();
 
+  // Card count per player id, for the turn strip at the top.
+  const handCountById = new Map([[me, you.hand.length]]);
+  opponents.forEach((o) => handCountById.set(o.id, o.handCount));
+  teammates.forEach((t) => handCountById.set(t.id, t.handCount));
+
   return (
     <div className="set-table">
+      <PlayersStrip
+        players={players}
+        turn={view.turn}
+        me={me}
+        handCountById={handCountById}
+      />
+
       {isTeam && (
         <TeamScoreboard
           view={view}
@@ -388,6 +444,34 @@ function Table({ view, myTurn, onAsk, onDeclare, onPlayAgain, me }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+// At-a-glance turn order: everyone (including you) is listed; the player whose
+// turn it is shows in white, the rest greyed. When it's YOUR turn, you turn
+// pink so attention lands on you.
+function PlayersStrip({ players, turn, me, handCountById }) {
+  return (
+    <div className="players-strip" aria-label="Players">
+      {players.map((p) => {
+        const isTurn = p.id === turn;
+        const isMe = p.id === me;
+        const cls =
+          "player-pip" +
+          (isTurn ? " is-turn" : "") +
+          (isTurn && isMe ? " is-mine-turn" : "");
+        return (
+          <div key={p.id} className={cls}>
+            {isTurn && <span className="player-pip-dot" aria-hidden="true" />}
+            <span className="player-pip-name">
+              {p.name}
+              {isMe && <span className="player-pip-you"> (you)</span>}
+            </span>
+            <span className="player-pip-cards">{handCountById.get(p.id) ?? 0}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -612,6 +696,15 @@ function sortCards(a, b) {
 
 function nameOf(players, id) {
   return players?.find((p) => p.id === id)?.name ?? id;
+}
+
+// Most recent set-making event in the log (or null) — drives the floating alert.
+function findLatestSet(log) {
+  if (!log) return null;
+  for (let i = log.length - 1; i >= 0; i--) {
+    if (log[i].kind === "set_collected" || log[i].kind === "declare_hit") return log[i];
+  }
+  return null;
 }
 
 // ── WINNER ─────────────────────────────────────────────────────────

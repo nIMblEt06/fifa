@@ -47,6 +47,12 @@ export default function GamePicker({ onPick, onOpenHof }) {
       tagline: "RUN",
       blurb: "Mash to sprint, 2–6 birds. Overheat and faceplant, eat worms, nail the photo-finish lunge.",
     },
+    {
+      id: "cage",
+      title: "CAGE",
+      tagline: "FOOTBALL",
+      blurb: "Four goals, two balls, teams of two. Concede 5 and your goal seals shut. Last side standing.",
+    },
   ];
 
   // Custom-named rooms are a power-user thing (recurring event rooms like

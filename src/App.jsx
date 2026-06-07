@@ -8,6 +8,7 @@ import BluffApp from "./games/bluff/BluffApp";
 import HitlerApp from "./games/hitler/HitlerApp";
 import UndercoverApp from "./games/undercover/UndercoverApp";
 import ChickenApp from "./games/chicken/ChickenApp";
+import CageApp from "./games/cage/CageApp";
 import { generateCode, readRoomFromUrl, writeRoomToUrl, clearRoomFromUrl, isHofRoute, navigateToHof } from "./utils/room";
 
 // Top-level router. The URL hash decides what we render:
@@ -47,6 +48,8 @@ export default function App() {
             ? `UNDERCOVER · ${route.code}`
           : route.game === "chicken"
             ? `CHICKEN RUN · ${route.code}`
+          : route.game === "cage"
+            ? `CAGE FOOTBALL · ${route.code}`
             : `FIFA · ${route.code}`;
     document.title = title;
   }, [route, onHof]);
@@ -78,5 +81,6 @@ export default function App() {
   if (route.game === "hitler") return <HitlerApp code={route.code} onLeave={handleLeave} />;
   if (route.game === "undercover") return <UndercoverApp code={route.code} onLeave={handleLeave} />;
   if (route.game === "chicken") return <ChickenApp code={route.code} onLeave={handleLeave} />;
+  if (route.game === "cage") return <CageApp code={route.code} onLeave={handleLeave} />;
   return <FifaApp code={route.code} onLeave={handleLeave} />;
 }

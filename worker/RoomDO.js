@@ -30,6 +30,11 @@ import {
   TICK_MS as CK_TICK_MS, DELAY_MS as CK_DELAY_MS, MAX_RACE_TICKS as CK_MAX_TICKS,
   MAX_TAPS_PER_TICK as CK_MAX_TAPS, MAX_LANES as CK_MAX_LANES, MIN_LANES as CK_MIN_LANES,
 } from "../src/games/chicken/engine.js";
+import {
+  createMatch as createCageMatch, step as cageStep, snapshot as cageSnapshot,
+  TICK_MS as CG_TICK_MS, DELAY_MS as CG_DELAY_MS, MAX_MATCH_TICKS as CG_MAX_TICKS,
+  MAX_SIDES as CG_MAX_SIDES, MIN_SIDES as CG_MIN_SIDES, MAX_PER_SIDE as CG_MAX_PER_SIDE,
+} from "../src/games/cage/engine.js";
 
 // One Durable Object instance per room code. Owns:
 //   • persistent room state (storage)
@@ -124,6 +129,9 @@ export class RoomDO extends DurableObject {
       } else if (gameType === "chicken") {
         const payload = this.buildChickenSnapshot(state);
         try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+      } else if (gameType === "cage") {
+        const payload = this.buildCageSnapshot(state);
+        try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
       } else if (gameType === "undercover") {
         const payload = buildUndercoverSnapshot(state, /* viewerId */ null);
         try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
@@ -157,6 +165,10 @@ export class RoomDO extends DurableObject {
       }
       if (game === "chicken") {
         await this.handleChickenJoin(msg);
+        return;
+      }
+      if (game === "cage") {
+        await this.handleCageJoin(msg);
         return;
       }
       if (game === "undercover") {
@@ -247,6 +259,11 @@ export class RoomDO extends DurableObject {
 
     if (typeof msg.type === "string" && msg.type.startsWith("chicken")) {
       await this.handleChickenMessage(ws, msg);
+      return;
+    }
+
+    if (typeof msg.type === "string" && msg.type.startsWith("cage")) {
+      await this.handleCageMessage(ws, msg);
       return;
     }
 
@@ -1083,6 +1100,11 @@ export class RoomDO extends DurableObject {
       if (state.phase === "racing") {
         await this.ctx.storage.setAlarm(Date.now() + 1000);
       }
+    } else if (state?.gameType === "cage" && state.phase === "playing") {
+      await this.advanceCageMatch(state);
+      if (state.phase === "playing") {
+        await this.ctx.storage.setAlarm(Date.now() + 1000);
+      }
     }
   }
 
@@ -1101,6 +1123,216 @@ export class RoomDO extends DurableObject {
     const s = state ?? (await this.ctx.storage.get("state"));
     if (!s || s.gameType !== "chicken") return;
     this.broadcast({ type: "state", data: this.buildChickenSnapshot(s) });
+  }
+
+  // Cage Football (server-authoritative, delayed real-time physics) ─────
+  //
+  // Same fairness/architecture as Chicken Run, but for CONTINUOUS input:
+  // clients send key-state CHANGES ({atMs, keys bitmask}, ~10–30 small
+  // msgs/s + heartbeat — never positions). The DO sim runs DELAY_MS behind
+  // real time and applies each input at the tick it was pressed; clients
+  // predict their own player with the shared engine step and interpolate
+  // everything else. Lazy advance on messages + 1s alarm watchdog.
+  //
+  // Room state (storage "state"):
+  //   { gameType: "cage", phase: "lobby"|"playing"|"results",
+  //     seats: [{ id, name, owner, wall }],   // wall 0..3 = team/goal
+  //     startAt, match: <engine state>|null,
+  //     inputs: { seatId: [{ atMs, keys }] }, // pending timeline (sorted)
+  //     current: { seatId: keys } }           // last applied key state
+
+  async ensureCageState() {
+    let state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "cage") {
+      state = {
+        gameType: "cage",
+        phase: "lobby",
+        seats: [],
+        startAt: null,
+        match: null,
+        inputs: {},
+        current: {},
+      };
+      await this.ctx.storage.put("state", state);
+    }
+    return state;
+  }
+
+  cageAutoWall(state) {
+    // Fewest-occupied wall with room, walls 0..3 in order.
+    let best = null, bestN = Infinity;
+    for (let w = 0; w < CG_MAX_SIDES; w++) {
+      const n = state.seats.filter((s) => s.wall === w).length;
+      if (n < CG_MAX_PER_SIDE && n < bestN) { best = w; bestN = n; }
+    }
+    return best;
+  }
+
+  async handleCageJoin(msg) {
+    const state = await this.ensureCageState();
+    if (msg.name && msg.clientId && state.phase === "lobby") {
+      const existing = state.seats.find((s) => s.id === msg.clientId);
+      if (existing) existing.name = String(msg.name).slice(0, 24);
+      else {
+        const wall = this.cageAutoWall(state);
+        if (wall !== null) {
+          state.seats.push({ id: msg.clientId, name: String(msg.name).slice(0, 24), owner: msg.clientId, wall });
+        }
+      }
+      await this.ctx.storage.put("state", state);
+    }
+    await this.broadcastCageState();
+  }
+
+  async handleCageMessage(ws, msg) {
+    const fail = (message) => {
+      try { ws.send(JSON.stringify({ type: "error", message })); } catch (_e) { void _e; }
+    };
+    let att = null;
+    try { att = ws.deserializeAttachment(); } catch { /* none */ }
+    const me = att?.clientId;
+
+    if (msg.type === "cagePing") {
+      try { ws.send(JSON.stringify({ type: "cagePong", t: msg.t, serverNow: Date.now() })); } catch (_e) { void _e; }
+      return;
+    }
+
+    if (!me) return fail("Join the room first");
+    const state = await this.ensureCageState();
+    const ownsSeat = (seatId) => state.seats.find((s) => s.id === seatId && s.owner === me);
+
+    switch (msg.type) {
+      case "cageInput": {
+        // { seat, atMs, keys } — key-state change or heartbeat.
+        if (state.phase !== "playing" || !state.match) return; // silent near match end
+        if (!ownsSeat(msg.seat)) return;
+        const atMs = Number(msg.atMs);
+        const keys = Number(msg.keys) & 31;
+        if (!(atMs >= 0) || atMs > CG_MAX_TICKS * CG_TICK_MS) return;
+        const list = (state.inputs[msg.seat] = state.inputs[msg.seat] || []);
+        list.push({ atMs, keys });
+        if (list.length > 120) list.splice(0, list.length - 120);
+        break;
+      }
+      case "cagePickWall": {
+        if (state.phase !== "lobby") return fail("Match already started");
+        const seat = ownsSeat(msg.seat ?? me) || ownsSeat(me);
+        if (!seat) return fail("Take a seat first");
+        const wall = Number(msg.wall);
+        if (!(wall >= 0 && wall < CG_MAX_SIDES)) return fail("Bad wall");
+        const occupants = state.seats.filter((s) => s.wall === wall && s.id !== seat.id);
+        if (occupants.length >= CG_MAX_PER_SIDE) return fail("That side is full");
+        seat.wall = wall;
+        break;
+      }
+      case "cageAddCouch": {
+        if (state.phase !== "lobby") return fail("Match already started");
+        if (!msg.name) return fail("Name required");
+        if (state.seats.filter((s) => s.owner === me).length >= 2) {
+          return fail("Max 2 local players per keyboard");
+        }
+        const wall = this.cageAutoWall(state);
+        if (wall === null) return fail("Cage is full");
+        const n = state.seats.filter((s) => s.owner === me).length + 1;
+        state.seats.push({ id: `${me}_c${n}`, name: String(msg.name).slice(0, 24), owner: me, wall });
+        break;
+      }
+      case "cageRemoveSeat": {
+        if (state.phase !== "lobby") return fail("Match already started");
+        if (!ownsSeat(msg.seat)) return fail("Not your seat");
+        state.seats = state.seats.filter((s) => s.id !== msg.seat);
+        break;
+      }
+      case "cageStart":
+      case "cageRematch": {
+        if (state.phase === "playing") return fail("Match in progress");
+        const byWall = new Map();
+        for (const s of state.seats) {
+          if (!byWall.has(s.wall)) byWall.set(s.wall, []);
+          byWall.get(s.wall).push({ seatId: s.id, name: s.name });
+        }
+        const sides = [...byWall.entries()].map(([wall, players]) => ({ wall, players }));
+        if (sides.length < CG_MIN_SIDES) return fail(`Need teams on at least ${CG_MIN_SIDES} sides`);
+        try {
+          state.match = createCageMatch(sides);
+        } catch (e) {
+          return fail(e.message);
+        }
+        state.phase = "playing";
+        state.startAt = Date.now() + 1500; // freeze in-engine doubles as countdown
+        state.inputs = {};
+        state.current = {};
+        await this.ctx.storage.setAlarm(Date.now() + 1000);
+        break;
+      }
+      case "cageReset": {
+        state.phase = "lobby";
+        state.match = null;
+        state.startAt = null;
+        state.inputs = {};
+        state.current = {};
+        break;
+      }
+      default:
+        return fail("Unknown action");
+    }
+
+    await this.advanceCageMatch(state);
+  }
+
+  // Advance the authoritative match up to (now − DELAY_MS); inputs land at
+  // the tick they were pressed. Persist every advance (storage.get clones);
+  // broadcast at ~15Hz.
+  async advanceCageMatch(state) {
+    if (state.phase === "playing" && state.match && !state.match.results) {
+      const targetTick = Math.min(
+        CG_MAX_TICKS,
+        Math.floor((Date.now() - state.startAt - CG_DELAY_MS) / CG_TICK_MS)
+      );
+      while (state.match.tick < targetTick) {
+        const tickEndMs = (state.match.tick + 1) * CG_TICK_MS;
+        for (const s of state.seats) {
+          const list = state.inputs[s.id];
+          if (!list?.length) continue;
+          while (list.length && list[0].atMs <= tickEndMs) {
+            state.current[s.id] = list.shift().keys;
+          }
+        }
+        cageStep(state.match, state.current);
+      }
+      if (state.match.results) {
+        state.phase = "results";
+        await this.ctx.storage.deleteAlarm();
+      } else {
+        const next = await this.ctx.storage.getAlarm();
+        if (next === null) await this.ctx.storage.setAlarm(Date.now() + 1000);
+      }
+    }
+
+    await this.ctx.storage.put("state", state);
+
+    const now = Date.now();
+    if (state.phase !== "playing" || !this._cgLastBroadcast || now - this._cgLastBroadcast >= 66) {
+      this._cgLastBroadcast = now;
+      await this.broadcastCageState(state);
+    }
+  }
+
+  buildCageSnapshot(state) {
+    return {
+      gameType: "cage",
+      phase: state.phase,
+      seats: state.seats,
+      startAt: state.startAt,
+      serverNow: Date.now(),
+      match: state.match ? cageSnapshot(state.match) : null,
+    };
+  }
+
+  async broadcastCageState(state = null) {
+    const s = state ?? (await this.ctx.storage.get("state"));
+    if (!s || s.gameType !== "cage") return;
+    this.broadcast({ type: "state", data: this.buildCageSnapshot(s) });
   }
 
   // Helpers ─────────────────────────────────────────────────────────────

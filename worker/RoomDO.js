@@ -24,6 +24,12 @@ import {
   validateRoleCounts as ucValidateRoleCounts,
 } from "../src/games/undercover/engine.js";
 import { WORD_PAIRS as UC_WORD_PAIRS } from "../src/games/undercover/wordpairs.js";
+import {
+  createRace, simTick as chickenSimTick, applyLunge as chickenApplyLunge,
+  snapshot as chickenSnapshot,
+  TICK_MS as CK_TICK_MS, DELAY_MS as CK_DELAY_MS, MAX_RACE_TICKS as CK_MAX_TICKS,
+  MAX_TAPS_PER_TICK as CK_MAX_TAPS, MAX_LANES as CK_MAX_LANES, MIN_LANES as CK_MIN_LANES,
+} from "../src/games/chicken/engine.js";
 
 // One Durable Object instance per room code. Owns:
 //   • persistent room state (storage)
@@ -115,6 +121,9 @@ export class RoomDO extends DurableObject {
       } else if (gameType === "hitler") {
         const payload = buildHitlerSnapshot(state, /* viewerId */ null);
         try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+      } else if (gameType === "chicken") {
+        const payload = this.buildChickenSnapshot(state);
+        try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
       } else if (gameType === "undercover") {
         const payload = buildUndercoverSnapshot(state, /* viewerId */ null);
         try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
@@ -144,6 +153,10 @@ export class RoomDO extends DurableObject {
       ws.serializeAttachment({ clientId: msg.clientId, name: msg.name, game });
       if (game === "poker") {
         await this.handlePokerJoin(msg);
+        return;
+      }
+      if (game === "chicken") {
+        await this.handleChickenJoin(msg);
         return;
       }
       if (game === "undercover") {
@@ -229,6 +242,11 @@ export class RoomDO extends DurableObject {
 
     if (typeof msg.type === "string" && msg.type.startsWith("poker")) {
       await this.handlePokerMessage(ws, msg);
+      return;
+    }
+
+    if (typeof msg.type === "string" && msg.type.startsWith("chicken")) {
+      await this.handleChickenMessage(ws, msg);
       return;
     }
 
@@ -859,6 +877,230 @@ export class RoomDO extends DurableObject {
       const payload = buildUndercoverSnapshot(state, viewerId);
       try { ws.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
     }
+  }
+
+  // Chicken Run (server-authoritative, delayed real-time sim) ───────────
+  //
+  // FAIRNESS: clients count their own keystrokes in 100ms windows and send
+  // batched {seq, taps} reports (NOT one message per press). The DO simulates
+  // race-time T at wall-time T + DELAY_MS, crediting taps to the window they
+  // happened in — latency under the buffer can't change the result.
+  //
+  // The sim advances LAZILY on every incoming message (tap batches arrive
+  // ~10/s per client, plenty of wake-ups) with a 1s storage alarm as the
+  // watchdog so a race always finishes even if everyone goes quiet. That
+  // keeps it hibernation-safe: no setInterval, no in-memory-only state —
+  // the race persists to storage on a throttle and on every phase change.
+  //
+  // Room state (storage "state"):
+  //   { gameType: "chicken", phase: "lobby"|"racing"|"results",
+  //     seats: [{ id, name, owner }],   // owner = clientId; couch mode lets
+  //                                     // one client own several seats
+  //     raceStartAt, race: <engine state>|null,
+  //     pendingTaps: { seatId: { seq: taps } }, pendingLunges: [{seat, atMs}] }
+
+  async ensureChickenState() {
+    let state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "chicken") {
+      state = {
+        gameType: "chicken",
+        phase: "lobby",
+        seats: [],
+        raceStartAt: null,
+        race: null,
+        pendingTaps: {},
+        pendingLunges: [],
+      };
+      await this.ctx.storage.put("state", state);
+    }
+    return state;
+  }
+
+  async handleChickenJoin(msg) {
+    const state = await this.ensureChickenState();
+    if (msg.name && msg.clientId && state.phase === "lobby") {
+      const existing = state.seats.find((s) => s.id === msg.clientId);
+      if (existing) existing.name = String(msg.name).slice(0, 24);
+      else if (state.seats.length < CK_MAX_LANES) {
+        state.seats.push({ id: msg.clientId, name: String(msg.name).slice(0, 24), owner: msg.clientId });
+      }
+      await this.ctx.storage.put("state", state);
+    }
+    await this.broadcastChickenState();
+  }
+
+  async handleChickenMessage(ws, msg) {
+    const fail = (message) => {
+      try { ws.send(JSON.stringify({ type: "error", message })); } catch (_e) { void _e; }
+    };
+    let att = null;
+    try { att = ws.deserializeAttachment(); } catch { /* none */ }
+    const me = att?.clientId;
+
+    // Clock sync: direct pong on the same socket (never broadcast).
+    if (msg.type === "chickenPing") {
+      try { ws.send(JSON.stringify({ type: "chickenPong", t: msg.t, serverNow: Date.now() })); } catch (_e) { void _e; }
+      return;
+    }
+
+    if (!me) return fail("Join the room first");
+    const state = await this.ensureChickenState();
+    const ownsSeat = (seatId) => state.seats.find((s) => s.id === seatId && s.owner === me);
+
+    switch (msg.type) {
+      case "chickenAddCouch": {
+        // Extra local player on the same keyboard/device.
+        if (state.phase !== "lobby") return fail("Race already started");
+        if (!msg.name) return fail("Name required");
+        if (state.seats.length >= CK_MAX_LANES) return fail(`Max ${CK_MAX_LANES} chickens`);
+        const n = state.seats.filter((s) => s.owner === me).length + 1;
+        state.seats.push({ id: `${me}_c${n}`, name: String(msg.name).slice(0, 24), owner: me });
+        break;
+      }
+      case "chickenRemoveSeat": {
+        if (state.phase !== "lobby") return fail("Race already started");
+        if (!ownsSeat(msg.seat)) return fail("Not your seat");
+        state.seats = state.seats.filter((s) => s.id !== msg.seat);
+        break;
+      }
+      case "chickenStart": {
+        if (state.phase === "racing") return fail("Race in progress");
+        if (state.seats.length < CK_MIN_LANES) return fail(`Need at least ${CK_MIN_LANES} chickens`);
+        try {
+          state.race = createRace(state.seats.map((s) => ({ id: s.id, name: s.name })));
+        } catch (e) {
+          return fail(e.message);
+        }
+        state.phase = "racing";
+        state.raceStartAt = Date.now() + 3000; // countdown
+        state.pendingTaps = {};
+        state.pendingLunges = [];
+        await this.ctx.storage.setAlarm(Date.now() + 1000);
+        break;
+      }
+      case "chickenTaps": {
+        // { reports: [{ seat, seq, taps }] } — idempotent by (seat, seq):
+        // clients re-send recent windows for redundancy, last write wins.
+        if (state.phase !== "racing" || !state.race) return; // silent: races end while reports are in flight
+        const reports = Array.isArray(msg.reports) ? msg.reports.slice(0, 40) : [];
+        for (const r of reports) {
+          if (!r || !ownsSeat(r.seat)) continue;
+          const seq = Math.floor(Number(r.seq));
+          if (!(seq >= 0) || seq > CK_MAX_TICKS) continue;
+          if (seq < state.race.tick) continue; // window already simulated
+          const taps = Math.max(0, Math.min(CK_MAX_TAPS, Math.floor(Number(r.taps) || 0)));
+          (state.pendingTaps[r.seat] = state.pendingTaps[r.seat] || {})[seq] = taps;
+        }
+        break;
+      }
+      case "chickenLunge": {
+        // { seat, atMs } — atMs is the client's race-clock press time; queued
+        // until the delayed sim reaches it so judging stays deterministic.
+        if (state.phase !== "racing" || !state.race) return fail("No race running");
+        if (!ownsSeat(msg.seat)) return fail("Not your seat");
+        const atMs = Number(msg.atMs);
+        if (!(atMs >= 0) || atMs > CK_MAX_TICKS * CK_TICK_MS) return fail("Bad lunge time");
+        if (state.pendingLunges.some((l) => l.seat === msg.seat)) return fail("Lunge already queued");
+        state.pendingLunges.push({ seat: msg.seat, atMs });
+        break;
+      }
+      case "chickenRematch": {
+        if (state.phase === "racing") return fail("Race in progress");
+        if (state.seats.length < CK_MIN_LANES) return fail(`Need at least ${CK_MIN_LANES} chickens`);
+        state.race = createRace(state.seats.map((s) => ({ id: s.id, name: s.name })));
+        state.phase = "racing";
+        state.raceStartAt = Date.now() + 3000;
+        state.pendingTaps = {};
+        state.pendingLunges = [];
+        await this.ctx.storage.setAlarm(Date.now() + 1000);
+        break;
+      }
+      case "chickenReset": {
+        state.phase = "lobby";
+        state.race = null;
+        state.raceStartAt = null;
+        state.pendingTaps = {};
+        state.pendingLunges = [];
+        break;
+      }
+      default:
+        return fail("Unknown action");
+    }
+
+    await this.advanceChickenRace(state);
+  }
+
+  // Advance the authoritative sim up to (now − DELAY_MS), then persist +
+  // broadcast on a throttle. Called from every chicken message and the alarm.
+  async advanceChickenRace(state) {
+    if (state.phase === "racing" && state.race && !state.race.results) {
+      const targetTick = Math.min(
+        CK_MAX_TICKS,
+        Math.floor((Date.now() - state.raceStartAt - CK_DELAY_MS) / CK_TICK_MS)
+      );
+      while (state.race.tick < targetTick) {
+        // Lunges land at the tick covering their press time.
+        const tickEndMs = (state.race.tick + 1) * CK_TICK_MS;
+        const due = state.pendingLunges.filter((l) => l.atMs <= tickEndMs);
+        for (const l of due) chickenApplyLunge(state.race, l.seat, l.atMs); // invalid → ignored
+        state.pendingLunges = state.pendingLunges.filter((l) => l.atMs > tickEndMs);
+
+        const taps = {};
+        for (const s of state.seats) taps[s.id] = state.pendingTaps[s.id]?.[state.race.tick] ?? 0;
+        chickenSimTick(state.race, taps);
+
+        // Drop consumed windows to keep the buffer tiny.
+        for (const s of state.seats) {
+          if (state.pendingTaps[s.id]) delete state.pendingTaps[s.id][state.race.tick - 1];
+        }
+      }
+      if (state.race.results) {
+        state.phase = "results";
+        await this.ctx.storage.deleteAlarm();
+      } else {
+        // Watchdog: keep the sim moving even if every client goes silent.
+        const next = await this.ctx.storage.getAlarm();
+        if (next === null) await this.ctx.storage.setAlarm(Date.now() + 1000);
+      }
+    }
+
+    // Persist every advance — storage.get returns clones, so skipping a put
+    // would roll the sim back on the next message. The runtime coalesces
+    // these writes, and a race only lasts ~30s.
+    await this.ctx.storage.put("state", state);
+
+    const now = Date.now();
+    if (state.phase !== "racing" || !this._ckLastBroadcast || now - this._ckLastBroadcast >= CK_TICK_MS) {
+      this._ckLastBroadcast = now;
+      await this.broadcastChickenState(state);
+    }
+  }
+
+  async alarm() {
+    const state = await this.ctx.storage.get("state");
+    if (state?.gameType === "chicken" && state.phase === "racing") {
+      await this.advanceChickenRace(state);
+      if (state.phase === "racing") {
+        await this.ctx.storage.setAlarm(Date.now() + 1000);
+      }
+    }
+  }
+
+  buildChickenSnapshot(state) {
+    return {
+      gameType: "chicken",
+      phase: state.phase,
+      seats: state.seats,
+      raceStartAt: state.raceStartAt,
+      serverNow: Date.now(),
+      race: state.race ? chickenSnapshot(state.race) : null,
+    };
+  }
+
+  async broadcastChickenState(state = null) {
+    const s = state ?? (await this.ctx.storage.get("state"));
+    if (!s || s.gameType !== "chicken") return;
+    this.broadcast({ type: "state", data: this.buildChickenSnapshot(s) });
   }
 
   // Helpers ─────────────────────────────────────────────────────────────

@@ -13,6 +13,11 @@ import { viewerId } from "./room";
 // Use `sendAction({type:"start"|"ask"|...})` for game moves.
 export function useRoom(code, opts = {}) {
   const { game = "fifa", clientId: cid = null, name = null } = opts;
+  // Optional passthrough for game-specific message types the hook doesn't
+  // know about (e.g. chicken's clock-sync pong). Ref so callers can pass an
+  // inline closure without retriggering the connection effect.
+  const onMessageRef = useRef(opts.onMessage);
+  useEffect(() => { onMessageRef.current = opts.onMessage; });
   const [state, setState] = useState(null);
   const [presence, setPresence] = useState(0);
   const [reactions, setReactions] = useState([]);
@@ -94,6 +99,8 @@ export function useRoom(code, opts = {}) {
             }, 3000);
           } else if (msg.type === "error") {
             raiseError(msg.message || "Something went wrong.");
+          } else {
+            onMessageRef.current?.(msg);
           }
         } catch { /* malformed */ }
       };

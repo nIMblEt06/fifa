@@ -41,6 +41,12 @@ export default function GamePicker({ onPick, onOpenHof }) {
       tagline: "WHO IS THE SPY",
       blurb: "Secret-word bluffing. Civilians, undercovers, and a clueless Mr. White. Describe, vote, survive.",
     },
+    {
+      id: "chicken",
+      title: "CHICKEN",
+      tagline: "RUN",
+      blurb: "Mash to sprint, 2–6 birds. Overheat and faceplant, eat worms, nail the photo-finish lunge.",
+    },
   ];
 
   // Custom-named rooms are a power-user thing (recurring event rooms like

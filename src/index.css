@@ -2895,3 +2895,155 @@ tbody tr.qualified td:nth-child(1) {
   .pcard-big { width: 60px; height: 86px; }
   .poker-board { min-height: 64px; }
 }
+/* ─────────────────────────────────────────────────────────────
+   BLUFF (Cheat / B.S.)
+   ───────────────────────────────────────────────────────────── */
+
+/* Out players in the turn strip read dimmer with a strike. */
+.player-pip.is-out {
+  opacity: 0.4;
+  text-decoration: line-through;
+  border-style: dashed;
+}
+.player-pip.is-out .player-pip-cards { text-decoration: none; }
+
+/* ── The face-down pile in the middle ─────────────────────────── */
+.bluff-pile {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border: 2px solid var(--paper);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.bluff-pile-stack { position: relative; flex: 0 0 auto; }
+.bluff-pile-count {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--display);
+  font-size: 1.8rem;
+  color: var(--paper);
+  text-shadow: 0 0 6px var(--ink), 0 0 6px var(--ink);
+}
+.bluff-pile-meta { flex: 1; }
+.bluff-pile-label {
+  font-weight: 800;
+  letter-spacing: 2px;
+  margin-bottom: 4px;
+}
+.bluff-claim { font-size: 15px; }
+
+/* Card back: hot-magenta hatch so the pile reads as "hidden". */
+.pcard-back {
+  background: var(--ink);
+  border: 3px double var(--hot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+.pcard-back-mark {
+  font-family: var(--display);
+  font-size: 2rem;
+  color: var(--hot);
+}
+
+/* ── Current-round claim history chips ────────────────────────── */
+.bluff-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.bluff-history-chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 3px 7px;
+  border: 1px solid var(--dim);
+  color: var(--mute);
+}
+
+/* ── Action bar (pass / call bluff) ───────────────────────────── */
+.bluff-actions {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.bluff-actions .poker-btn { flex: 1; padding: 0.7rem; font-size: 0.8rem; }
+.bluff-call:not(:disabled) {
+  background: var(--shame);
+  border-color: var(--shame);
+  color: var(--paper);
+}
+.bluff-call:not(:disabled):hover {
+  background: var(--paper);
+  color: var(--shame);
+  border-color: var(--paper);
+}
+.poker-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Open-a-round rank picker (reuses .declare-ranks/.declare-rank) ── */
+.bluff-rankpick { margin-bottom: 16px; }
+.bluff-rankpick-label {
+  font-weight: 800;
+  letter-spacing: 2px;
+  margin-bottom: 8px;
+}
+
+/* ── Play bar under your hand ─────────────────────────────────── */
+.bluff-play-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+.bluff-play-hint { font-size: 14px; }
+.bluff-submit { padding: 0.9rem; }
+
+/* ── Bluff reveal alert (toast) ───────────────────────────────── */
+.bluff-alert {
+  position: fixed;
+  top: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  background: var(--ink);
+  border: 3px solid var(--paper);
+  padding: 16px 20px;
+  max-width: 90vw;
+  text-align: center;
+  animation: set-alert-in 0.2s ease-out;
+}
+.bluff-alert.lie { border-color: var(--shame); }
+.bluff-alert.truth { border-color: var(--live); }
+.bluff-alert-head {
+  font-family: var(--display);
+  font-size: 1.1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
+}
+.bluff-alert-cards {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.bluff-alert-verdict {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+}
+.bluff-alert.lie .bluff-alert-verdict { color: var(--shame); }
+.bluff-alert.truth .bluff-alert-verdict { color: var(--live); }
+
+/* ── Result board ─────────────────────────────────────────────── */
+.winner-row-crapico {
+  border: 2px solid var(--shame);
+  background: rgba(255, 59, 48, 0.08);
+}
+.winner-row-crapico .winner-name { color: var(--shame); font-weight: 900; }

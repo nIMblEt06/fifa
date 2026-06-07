@@ -5,6 +5,14 @@ import {
   seatPlayer, cashOutPlayer, canStartHand, redactFor as redactPoker,
 } from "../src/games/poker/engine.js";
 import { getGroups, getGroupMembers, createSettlementExpense } from "./splitwise.js";
+import {
+  startGame as startBluff,
+  applyPlay as applyBluffPlay,
+  applyPass as applyBluffPass,
+  applyBluff as applyBluffCall,
+  redactFor as redactBluff,
+  healState as healBluff,
+} from "../src/games/bluff/engine.js";
 
 // One Durable Object instance per room code. Owns:
 //   • persistent room state (storage)
@@ -90,6 +98,9 @@ export class RoomDO extends DurableObject {
         // Server-authoritative poker: spectator snapshot until the socket joins.
         const payload = buildPokerSnapshot(state, /* viewerId */ null);
         try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+      } else if (gameType === "bluff") {
+        const payload = buildBluffSnapshot(state, /* viewerId */ null);
+        try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
       } else if (state) {
         // Client-authoritative games (FIFA, Poker, …): relay the raw blob.
         try { server.send(JSON.stringify({ type: "state", data: state })); } catch (_e) { void _e; }
@@ -148,6 +159,25 @@ export class RoomDO extends DurableObject {
         }
         if (dirty) await this.ctx.storage.put("state", state);
         await this.broadcastLitState();
+      } else if (game === "bluff") {
+        await this.ensureBluffState();
+        const state = await this.ctx.storage.get("state");
+        let dirty = false;
+        if (!state.game && msg.name) {
+          state.lobby = state.lobby || [];
+          const existing = state.lobby.find((p) => p.id === msg.clientId);
+          if (existing) existing.name = msg.name;
+          else state.lobby.push({ id: msg.clientId, name: msg.name });
+          dirty = true;
+        }
+        // Self-heal in-flight games (advance a stuck turn if needed).
+        if (state.game && !state.game.loser) {
+          const before = JSON.stringify(state.game);
+          state.game = healBluff(state.game);
+          if (JSON.stringify(state.game) !== before) dirty = true;
+        }
+        if (dirty) await this.ctx.storage.put("state", state);
+        await this.broadcastBluffState();
       }
       return;
     }
@@ -251,6 +281,50 @@ export class RoomDO extends DurableObject {
       const teams = mode === "team" ? defaultTeams(lobby) : null;
       await this.ctx.storage.put("state", { gameType: "lit", lobby, mode, teams, game: null });
       await this.broadcastLitState();
+      return;
+    }
+
+    // ── BLUFF actions ───────────────────────────────────────────────
+    if (msg.type === "bluffStart") {
+      const state = await this.ctx.storage.get("state");
+      if (!state || state.gameType !== "bluff" || state.game) return;
+      if (!state.lobby || state.lobby.length < 3) return;
+      try {
+        state.game = startBluff(state.lobby);
+      } catch (e) {
+        try { ws.send(JSON.stringify({ type: "error", message: e.message })); } catch (_e) { void _e; }
+        return;
+      }
+      await this.ctx.storage.put("state", state);
+      await this.broadcastBluffState();
+      return;
+    }
+
+    if (msg.type === "bluffPlay" || msg.type === "bluffPass" || msg.type === "bluffCall") {
+      const state = await this.ctx.storage.get("state");
+      if (!state?.game || state.gameType !== "bluff") return;
+      const att = ws.deserializeAttachment();
+      if (!att?.clientId) return;
+      let res;
+      if (msg.type === "bluffPlay") res = applyBluffPlay(state.game, att.clientId, msg.cards, msg.claim);
+      else if (msg.type === "bluffPass") res = applyBluffPass(state.game, att.clientId);
+      else res = applyBluffCall(state.game, att.clientId);
+      if (res.error) {
+        try { ws.send(JSON.stringify({ type: "error", message: res.error })); } catch (_e) { void _e; }
+        return;
+      }
+      state.game = res.state;
+      await this.ctx.storage.put("state", state);
+      await this.broadcastBluffState();
+      return;
+    }
+
+    if (msg.type === "bluffReset") {
+      const state = await this.ctx.storage.get("state");
+      if (!state || state.gameType !== "bluff") return;
+      const lobby = state.lobby || [];
+      await this.ctx.storage.put("state", { gameType: "bluff", lobby, game: null });
+      await this.broadcastBluffState();
       return;
     }
   }
@@ -618,6 +692,26 @@ export class RoomDO extends DurableObject {
     }
   }
 
+  async ensureBluffState() {
+    let state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "bluff") {
+      state = { gameType: "bluff", lobby: [], game: null };
+      await this.ctx.storage.put("state", state);
+    }
+    return state;
+  }
+
+  async broadcastBluffState() {
+    const state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "bluff") return;
+    for (const ws of this.ctx.getWebSockets()) {
+      let viewerId = null;
+      try { viewerId = ws.deserializeAttachment()?.clientId || null; } catch { /* none */ }
+      const payload = buildBluffSnapshot(state, viewerId);
+      try { ws.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+    }
+  }
+
   broadcast(msg) {
     const data = JSON.stringify(msg);
     for (const ws of this.ctx.getWebSockets()) {
@@ -664,6 +758,21 @@ function buildLitSnapshot(state, viewerId) {
   }
   const view = redactFor(state.game, viewerId);
   return { ...view, phase: "playing", players: view.players };
+}
+
+// Build the snapshot sent to a Bluff client. Same shape pre/post-start so the
+// client can rely on `players` being the authoritative seat list.
+function buildBluffSnapshot(state, viewerId) {
+  const lobby = state?.lobby || [];
+  if (!state?.game) {
+    return {
+      phase: "lobby",
+      gameType: "bluff",
+      players: lobby,
+    };
+  }
+  const view = redactBluff(state.game, viewerId);
+  return { ...view, phase: "playing" };
 }
 
 function cors(response) {

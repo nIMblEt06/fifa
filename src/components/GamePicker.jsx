@@ -23,6 +23,12 @@ export default function GamePicker({ onPick, onOpenHof }) {
       tagline: "NO-LIMIT HOLD'EM",
       blurb: "Real dealt hands, blinds, side pots. Cash out and settle the net to Splitwise.",
     },
+    {
+      id: "bluff",
+      title: "BLUFF",
+      tagline: "CHEAT / B.S.",
+      blurb: "Lie through your teeth, dump your cards face down. Get caught and eat the whole pile. Last one holding is el crapico.",
+    },
   ];
 
   const [customCode, setCustomCode] = useState("");

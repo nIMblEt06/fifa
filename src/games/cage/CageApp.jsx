@@ -65,6 +65,8 @@ export default function CageApp({ code, onLeave }) {
       ghostsRef.current = {};
       trailsRef.current = [[], []];
       fxRef.current = { shakeUntil: 0, flashWall: null, flashUntil: 0 };
+      ballsRenderRef.current = [];
+      playersRenderRef.current = {};
     }
     if (view?.match) {
       const buf = snapsRef.current;
@@ -131,8 +133,11 @@ export default function CageApp({ code, onLeave }) {
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     window.addEventListener("blur", blur);
-    // Heartbeat so a lost packet can't stick a key forever server-side.
-    const hb = setInterval(() => { for (const s of mySeats) sendInput(s.id); }, 150);
+    // Heartbeat: re-sends current keys so a lost packet can't stick a key
+    // server-side, AND keeps the DO advancing+broadcasting at a steady rate
+    // (the sim only ticks on incoming messages + the 1s safety alarm), which
+    // is what feeds smooth ball/remote-player interpolation.
+    const hb = setInterval(() => { for (const s of mySeats) sendInput(s.id); }, 50);
     return () => {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
@@ -147,6 +152,12 @@ export default function CageApp({ code, onLeave }) {
   const trailsRef = useRef([[], []]);
   const fxRef = useRef({ shakeUntil: 0, flashWall: null, flashUntil: 0 });
   const lastEventTickRef = useRef(-1);
+  // Smoothed render positions for interpolated entities (balls + remote
+  // players). Dead-reckoned along velocity when the snapshot buffer runs dry,
+  // then low-pass filtered so new snapshots ease in instead of snapping.
+  const ballsRenderRef = useRef([]);
+  const playersRenderRef = useRef({});
+  const lastFrameRef = useRef(0);
 
   useEffect(() => {
     if (phase !== "playing" && phase !== "results") return;
@@ -207,7 +218,15 @@ export default function CageApp({ code, onLeave }) {
         }
       }
 
-      renderFrame(ctx, canvas, { a, b, t, latest, seats, me, ghosts: ghostsRef.current, trails: trailsRef.current, fx: fxRef.current, startAt, serverNow });
+      // Real-frame delta for frame-rate-independent smoothing.
+      const dt = lastFrameRef.current ? Math.min(50, now - lastFrameRef.current) : 16;
+      lastFrameRef.current = now;
+
+      renderFrame(ctx, canvas, {
+        a, b, t, latest, renderTick, seats, me,
+        ghosts: ghostsRef.current, trails: trailsRef.current, fx: fxRef.current,
+        ballsRender: ballsRenderRef.current, playersRender: playersRenderRef.current, dt,
+      });
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
@@ -415,7 +434,30 @@ const GOAL_LO = (ARENA - GOAL_W) / 2;
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 
-function renderFrame(ctx, canvas, { a, b, t, latest, seats, me, ghosts, trails, fx }) {
+const EXTRAP_CAP_TICKS = 6;   // dead-reckon at most ~200ms past the newest snapshot
+const SNAP_DIST = 150;        // teleport (goal reset) → snap, don't slide
+
+// Target for an interpolated entity: lerp between bracketing snapshots when we
+// have a future one, else dead-reckon along velocity. `cur` is the newest
+// authoritative sample (carries vx/vy).
+function entityTarget(prevSample, nextSample, t, cur, renderTick, newestTick) {
+  if (renderTick <= newestTick && prevSample && nextSample && nextSample !== prevSample) {
+    return { x: lerp(prevSample.x, nextSample.x, t), y: lerp(prevSample.y, nextSample.y, t) };
+  }
+  const ahead = Math.min(EXTRAP_CAP_TICKS, Math.max(0, renderTick - newestTick));
+  return { x: cur.x + cur.vx * ahead, y: cur.y + cur.vy * ahead };
+}
+
+// Low-pass a render position toward its target; snap on big jumps (resets).
+function smoothToward(store, key, tx, ty, k) {
+  let r = store[key];
+  if (!r) { r = store[key] = { x: tx, y: ty }; return r; }
+  if (Math.hypot(tx - r.x, ty - r.y) > SNAP_DIST) { r.x = tx; r.y = ty; }
+  else { r.x += (tx - r.x) * k; r.y += (ty - r.y) * k; }
+  return r;
+}
+
+function renderFrame(ctx, canvas, { a, b, t, latest, renderTick, seats, me, ghosts, trails, fx, ballsRender, playersRender, dt }) {
   const css = getComputedStyle(document.documentElement);
   const INK = css.getPropertyValue("--ink").trim() || "#0a0a0a";
   const PAPER = css.getPropertyValue("--paper").trim() || "#f4f1ea";
@@ -495,11 +537,15 @@ function renderFrame(ctx, canvas, { a, b, t, latest, seats, me, ghosts, trails, 
     }
   }
 
-  // Balls (interpolated) + trails
-  latest.balls.forEach((_, i) => {
-    const ba = a.balls[i], bb = b.balls[i];
-    if (!ba || !bb) return;
-    const x = lerp(ba.x, bb.x, t), y = lerp(ba.y, bb.y, t);
+  // Balls — interpolate, dead-reckon past the buffer, then low-pass smooth so
+  // the motion is as fluid as a predicted player. Frame-rate-independent k.
+  const newestTick = latest.tick;
+  const ballK = 1 - Math.exp(-dt / 45);
+  const playerK = 1 - Math.exp(-dt / 40);
+  latest.balls.forEach((nb, i) => {
+    const target = entityTarget(a.balls[i], b.balls[i], t, nb, renderTick, newestTick);
+    const r = smoothToward(ballsRender, i, target.x, target.y, ballK);
+    const x = r.x, y = r.y;
     const trail = trails[i];
     trail.push({ x, y });
     if (trail.length > 10) trail.shift();
@@ -525,18 +571,19 @@ function renderFrame(ctx, canvas, { a, b, t, latest, seats, me, ghosts, trails, 
   for (const pl of latest.players) {
     const side = sidesByWall.get(pl.wall);
     if (side?.eliminated) continue;
-    const pa = a.players.find((p) => p.seatId === pl.seatId);
-    const pb = b.players.find((p) => p.seatId === pl.seatId);
     const mine = ownerOf.get(pl.seatId) === me;
     let x, y;
     if (mine && ghosts[pl.seatId]) {
+      // Own player: client-side predicted (zero-latency).
       x = ghosts[pl.seatId].x;
       y = ghosts[pl.seatId].y;
-    } else if (pa && pb) {
-      x = lerp(pa.x, pb.x, t);
-      y = lerp(pa.y, pb.y, t);
     } else {
-      x = pl.x; y = pl.y;
+      // Remote player: same interpolate + dead-reckon + low-pass as the ball.
+      const pa = a.players.find((p) => p.seatId === pl.seatId);
+      const pb = b.players.find((p) => p.seatId === pl.seatId);
+      const target = entityTarget(pa, pb, t, pl, renderTick, newestTick);
+      const r = smoothToward(playersRender, pl.seatId, target.x, target.y, playerK);
+      x = r.x; y = r.y;
     }
     const color = SIDE_COLORS[pl.wall];
     // Kick flash ring

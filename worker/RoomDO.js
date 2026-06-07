@@ -1311,8 +1311,10 @@ export class RoomDO extends DurableObject {
 
     await this.ctx.storage.put("state", state);
 
+    // Broadcast at ~30Hz so interpolated entities (ball, remote players) get a
+    // dense stream; clients dead-reckon + low-pass between these anyway.
     const now = Date.now();
-    if (state.phase !== "playing" || !this._cgLastBroadcast || now - this._cgLastBroadcast >= 66) {
+    if (state.phase !== "playing" || !this._cgLastBroadcast || now - this._cgLastBroadcast >= 33) {
       this._cgLastBroadcast = now;
       await this.broadcastCageState(state);
     }

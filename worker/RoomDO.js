@@ -14,6 +14,16 @@ import {
   healState as healBluff,
 } from "../src/games/bluff/engine.js";
 import * as Hitler from "../src/games/hitler/engine.js";
+import {
+  startGame as ucStartGame,
+  applyClue as ucApplyClue,
+  applyVote as ucApplyVote,
+  applyMrWhiteGuess as ucApplyMrWhiteGuess,
+  redactFor as ucRedactFor,
+  defaultRoleCounts as ucDefaultRoleCounts,
+  validateRoleCounts as ucValidateRoleCounts,
+} from "../src/games/undercover/engine.js";
+import { WORD_PAIRS as UC_WORD_PAIRS } from "../src/games/undercover/wordpairs.js";
 
 // One Durable Object instance per room code. Owns:
 //   • persistent room state (storage)
@@ -105,6 +115,9 @@ export class RoomDO extends DurableObject {
       } else if (gameType === "hitler") {
         const payload = buildHitlerSnapshot(state, /* viewerId */ null);
         try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+      } else if (gameType === "undercover") {
+        const payload = buildUndercoverSnapshot(state, /* viewerId */ null);
+        try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
       } else if (state) {
         // Client-authoritative games (FIFA, Poker, …): relay the raw blob.
         try { server.send(JSON.stringify({ type: "state", data: state })); } catch (_e) { void _e; }
@@ -131,6 +144,20 @@ export class RoomDO extends DurableObject {
       ws.serializeAttachment({ clientId: msg.clientId, name: msg.name, game });
       if (game === "poker") {
         await this.handlePokerJoin(msg);
+        return;
+      }
+      if (game === "undercover") {
+        await this.ensureUndercoverState();
+        const state = await this.ctx.storage.get("state");
+        // Seat the player if not yet started; require a name to claim a seat.
+        if (!state.game && msg.name) {
+          state.lobby = state.lobby || [];
+          const existing = state.lobby.find((p) => p.id === msg.clientId);
+          if (existing) existing.name = msg.name;
+          else if (state.lobby.length < 12) state.lobby.push({ id: msg.clientId, name: msg.name });
+          await this.ctx.storage.put("state", state);
+        }
+        await this.broadcastUndercoverState();
         return;
       }
       if (game === "lit") {
@@ -208,6 +235,125 @@ export class RoomDO extends DurableObject {
     // ── Secret Hitler actions ───────────────────────────────────────────
     if (msg.type?.startsWith("hitler:")) {
       await this.handleHitlerAction(ws, msg);
+      return;
+    }
+
+    // ── UNDERCOVER message handlers ──────────────────────────────────────
+    if (msg.type === "uc_setRoles") {
+      // Host tweaks role counts in the lobby. { undercover, mrWhite }
+      const state = await this.ctx.storage.get("state");
+      if (!state || state.gameType !== "undercover" || state.game) return;
+      const n = (state.lobby || []).length;
+      const uc = Number(msg.undercover);
+      const mw = Number(msg.mrWhite);
+      const err = ucValidateRoleCounts(n, uc, mw);
+      if (err) {
+        try { ws.send(JSON.stringify({ type: "error", message: err })); } catch (_e) { void _e; }
+        return;
+      }
+      state.roles = { undercover: uc, mrWhite: mw };
+      await this.ctx.storage.put("state", state);
+      await this.broadcastUndercoverState();
+      return;
+    }
+
+    if (msg.type === "uc_start") {
+      const state = await this.ctx.storage.get("state");
+      if (!state || state.gameType !== "undercover" || state.game) return;
+      const lobby = state.lobby || [];
+      if (lobby.length < 4) {
+        try { ws.send(JSON.stringify({ type: "error", message: "Need at least 4 players" })); } catch (_e) { void _e; }
+        return;
+      }
+      // Pick a random unused pair; reset the used set if exhausted.
+      let used = Array.isArray(state.usedPairs) ? state.usedPairs : [];
+      if (used.length >= UC_WORD_PAIRS.length) used = [];
+      const usedSet = new Set(used);
+      const available = [];
+      for (let i = 0; i < UC_WORD_PAIRS.length; i++) if (!usedSet.has(i)) available.push(i);
+      const pairIndex = available[Math.floor(Math.random() * available.length)];
+      const pair = UC_WORD_PAIRS[pairIndex];
+      const roles = state.roles || ucDefaultRoleCounts(lobby.length);
+      try {
+        state.game = ucStartGame(lobby, {
+          pair,
+          pairIndex,
+          undercover: roles.undercover,
+          mrWhite: roles.mrWhite,
+        });
+      } catch (e) {
+        try { ws.send(JSON.stringify({ type: "error", message: e.message })); } catch (_e) { void _e; }
+        return;
+      }
+      state.usedPairs = [...used, pairIndex];
+      await this.ctx.storage.put("state", state);
+      await this.broadcastUndercoverState();
+      return;
+    }
+
+    if (msg.type === "uc_clue") {
+      const state = await this.ctx.storage.get("state");
+      if (!state?.game || state.gameType !== "undercover") return;
+      const att = ws.deserializeAttachment();
+      if (!att?.clientId) return;
+      const res = ucApplyClue(state.game, att.clientId, msg.clue);
+      if (res.error) {
+        try { ws.send(JSON.stringify({ type: "error", message: res.error })); } catch (_e) { void _e; }
+        return;
+      }
+      state.game = res.state;
+      await this.ctx.storage.put("state", state);
+      await this.broadcastUndercoverState();
+      return;
+    }
+
+    if (msg.type === "uc_vote") {
+      const state = await this.ctx.storage.get("state");
+      if (!state?.game || state.gameType !== "undercover") return;
+      const att = ws.deserializeAttachment();
+      if (!att?.clientId) return;
+      const res = ucApplyVote(state.game, att.clientId, msg.targetId);
+      if (res.error) {
+        try { ws.send(JSON.stringify({ type: "error", message: res.error })); } catch (_e) { void _e; }
+        return;
+      }
+      state.game = res.state;
+      await this.ctx.storage.put("state", state);
+      await this.broadcastUndercoverState();
+      return;
+    }
+
+    if (msg.type === "uc_guess") {
+      const state = await this.ctx.storage.get("state");
+      if (!state?.game || state.gameType !== "undercover") return;
+      const att = ws.deserializeAttachment();
+      if (!att?.clientId) return;
+      const res = ucApplyMrWhiteGuess(state.game, att.clientId, msg.guess);
+      if (res.error) {
+        try { ws.send(JSON.stringify({ type: "error", message: res.error })); } catch (_e) { void _e; }
+        return;
+      }
+      state.game = res.state;
+      await this.ctx.storage.put("state", state);
+      await this.broadcastUndercoverState();
+      return;
+    }
+
+    if (msg.type === "uc_reset") {
+      // Keep lobby, role tweaks, and used-pair history so re-plays don't repeat words.
+      const state = await this.ctx.storage.get("state");
+      if (!state || state.gameType !== "undercover") return;
+      const lobby = state.lobby || [];
+      const roles = state.roles || null;
+      const usedPairs = Array.isArray(state.usedPairs) ? state.usedPairs : [];
+      await this.ctx.storage.put("state", {
+        gameType: "undercover",
+        lobby,
+        roles,
+        usedPairs,
+        game: null,
+      });
+      await this.broadcastUndercoverState();
       return;
     }
 
@@ -694,6 +840,27 @@ export class RoomDO extends DurableObject {
     return json({ error: "Not found" }, 404);
   }
 
+  // ── UNDERCOVER helpers ────────────────────────────────────────────────
+  async ensureUndercoverState() {
+    let state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "undercover") {
+      state = { gameType: "undercover", lobby: [], roles: null, usedPairs: [], game: null };
+      await this.ctx.storage.put("state", state);
+    }
+    return state;
+  }
+
+  async broadcastUndercoverState() {
+    const state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "undercover") return;
+    for (const ws of this.ctx.getWebSockets()) {
+      let viewerId = null;
+      try { viewerId = ws.deserializeAttachment()?.clientId || null; } catch { /* none */ }
+      const payload = buildUndercoverSnapshot(state, viewerId);
+      try { ws.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+    }
+  }
+
   // Helpers ─────────────────────────────────────────────────────────────
 
   async ensureLitState() {
@@ -894,6 +1061,27 @@ function buildHitlerSnapshot(state, viewerId) {
   }
   const view = Hitler.redactFor(state.game, viewerId);
   return { ...view, started: true };
+}
+
+// Build the snapshot we send to an Undercover client. Same flat shape pre- and
+// post-start: a "lobby" stage exposes the seat list + role-count config; once
+// the game starts we relay the engine's per-viewer redacted view (whose own
+// `phase` field — describe/vote/mrwhite_guess/over — drives the in-game UI).
+function buildUndercoverSnapshot(state, viewerId) {
+  const lobby = state?.lobby || [];
+  const n = lobby.length;
+  const roles = state?.roles || (n >= 4 ? ucDefaultRoleCounts(n) : { undercover: 1, mrWhite: 0 });
+  if (!state?.game) {
+    return {
+      stage: "lobby",
+      players: lobby,
+      roles,
+      defaultRoles: n >= 4 ? ucDefaultRoleCounts(n) : null,
+      playerCount: n,
+    };
+  }
+  const view = ucRedactFor(state.game, viewerId);
+  return { ...view, stage: "playing" };
 }
 
 function cors(response) {

@@ -35,6 +35,12 @@ export default function GamePicker({ onPick, onOpenHof }) {
       tagline: "HITLER",
       blurb: "5–10 player social deduction. Liberals vs Fascists hiding Hitler. Nominate, vote, enact, deceive.",
     },
+    {
+      id: "undercover",
+      title: "UNDERCOVER",
+      tagline: "WHO IS THE SPY",
+      blurb: "Secret-word bluffing. Civilians, undercovers, and a clueless Mr. White. Describe, vote, survive.",
+    },
   ];
 
   const [customCode, setCustomCode] = useState("");

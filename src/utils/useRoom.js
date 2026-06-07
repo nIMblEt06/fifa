@@ -58,7 +58,7 @@ export function useRoom(code, opts = {}) {
         // user has already joined (we have their name cached). First-time
         // joining is driven by sendAction({type:"join", name}) so the user
         // controls when they take a seat.
-        if (game === "lit" && cid && pendingNameRef.current) {
+        if ((game === "lit" || game === "bluff") && cid && pendingNameRef.current) {
           try {
             ws.send(JSON.stringify({ type: "join", game, clientId: cid, name: pendingNameRef.current }));
           } catch { /* will retry on reconnect */ }

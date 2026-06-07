@@ -29,6 +29,12 @@ export default function GamePicker({ onPick, onOpenHof }) {
       tagline: "CHEAT / B.S.",
       blurb: "Lie through your teeth, dump your cards face down. Get caught and eat the whole pile. Last one holding is el crapico.",
     },
+    {
+      id: "hitler",
+      title: "SECRET",
+      tagline: "HITLER",
+      blurb: "5–10 player social deduction. Liberals vs Fascists hiding Hitler. Nominate, vote, enact, deceive.",
+    },
   ];
 
   const [customCode, setCustomCode] = useState("");

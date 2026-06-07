@@ -13,6 +13,7 @@ import {
   redactFor as redactBluff,
   healState as healBluff,
 } from "../src/games/bluff/engine.js";
+import * as Hitler from "../src/games/hitler/engine.js";
 
 // One Durable Object instance per room code. Owns:
 //   • persistent room state (storage)
@@ -101,6 +102,9 @@ export class RoomDO extends DurableObject {
       } else if (gameType === "bluff") {
         const payload = buildBluffSnapshot(state, /* viewerId */ null);
         try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+      } else if (gameType === "hitler") {
+        const payload = buildHitlerSnapshot(state, /* viewerId */ null);
+        try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
       } else if (state) {
         // Client-authoritative games (FIFA, Poker, …): relay the raw blob.
         try { server.send(JSON.stringify({ type: "state", data: state })); } catch (_e) { void _e; }
@@ -178,12 +182,32 @@ export class RoomDO extends DurableObject {
         }
         if (dirty) await this.ctx.storage.put("state", state);
         await this.broadcastBluffState();
+      } else if (game === "hitler") {
+        await this.ensureHitlerState();
+        const state = await this.ctx.storage.get("state");
+        let dirty = false;
+        // Seat the player if not yet started. Require a name to claim a seat.
+        if (!state.game && msg.name) {
+          state.lobby = state.lobby || [];
+          const existing = state.lobby.find((p) => p.id === msg.clientId);
+          if (existing) existing.name = msg.name;
+          else if (state.lobby.length < 10) state.lobby.push({ id: msg.clientId, name: msg.name });
+          dirty = true;
+        }
+        if (dirty) await this.ctx.storage.put("state", state);
+        await this.broadcastHitlerState();
       }
       return;
     }
 
     if (typeof msg.type === "string" && msg.type.startsWith("poker")) {
       await this.handlePokerMessage(ws, msg);
+      return;
+    }
+
+    // ── Secret Hitler actions ───────────────────────────────────────────
+    if (msg.type?.startsWith("hitler:")) {
+      await this.handleHitlerAction(ws, msg);
       return;
     }
 
@@ -681,6 +705,89 @@ export class RoomDO extends DurableObject {
     return state;
   }
 
+  // ── Secret Hitler helpers ─────────────────────────────────────────────
+
+  async ensureHitlerState() {
+    let state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "hitler") {
+      state = { gameType: "hitler", lobby: [], game: null };
+      await this.ctx.storage.put("state", state);
+    }
+    return state;
+  }
+
+  async broadcastHitlerState() {
+    const state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "hitler") return;
+    for (const ws of this.ctx.getWebSockets()) {
+      let viewerId = null;
+      try { viewerId = ws.deserializeAttachment()?.clientId || null; } catch { /* none */ }
+      const payload = buildHitlerSnapshot(state, viewerId);
+      try { ws.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+    }
+  }
+
+  // Dispatch a "hitler:*" game action. All mutations go through the pure engine
+  // and rebroadcast per-viewer redacted snapshots.
+  async handleHitlerAction(ws, msg) {
+    const state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "hitler") return;
+    const att = (() => { try { return ws.deserializeAttachment(); } catch { return null; } })();
+    const me = att?.clientId || null;
+    const sendErr = (message) => {
+      try { ws.send(JSON.stringify({ type: "error", message })); } catch (_e) { void _e; }
+    };
+
+    const E = Hitler;
+    const type = msg.type.slice("hitler:".length);
+
+    // Lobby-level actions.
+    if (type === "start") {
+      if (state.game) return;
+      const lobby = state.lobby || [];
+      if (lobby.length < 5 || lobby.length > 10) {
+        return sendErr("Secret Hitler needs 5–10 players");
+      }
+      try {
+        state.game = E.startGame(lobby);
+      } catch (e) {
+        return sendErr(e.message);
+      }
+      await this.ctx.storage.put("state", state);
+      await this.broadcastHitlerState();
+      return;
+    }
+    if (type === "reset") {
+      const lobby = state.lobby || [];
+      await this.ctx.storage.put("state", { gameType: "hitler", lobby, game: null });
+      await this.broadcastHitlerState();
+      return;
+    }
+
+    // In-game actions require an active game and an identified seat.
+    if (!state.game) return;
+    if (!me) return sendErr("You're not seated in this game");
+
+    let res;
+    switch (type) {
+      case "nominate":   res = E.nominateChancellor(state.game, me, msg.targetId); break;
+      case "vote":       res = E.castVote(state.game, me, msg.vote); break;
+      case "discard":    res = E.presidentDiscard(state.game, me, msg.index); break;
+      case "enact":      res = E.chancellorEnact(state.game, me, msg.index); break;
+      case "proposeVeto": res = E.proposeVeto(state.game, me); break;
+      case "respondVeto": res = E.respondVeto(state.game, me, !!msg.consent); break;
+      case "investigate": res = E.investigatePlayer(state.game, me, msg.targetId); break;
+      case "specialElection": res = E.specialElection(state.game, me, msg.targetId); break;
+      case "peekAck":    res = E.peekAck(state.game, me); break;
+      case "execute":    res = E.executePlayer(state.game, me, msg.targetId); break;
+      default: return;
+    }
+    if (res.error) return sendErr(res.error);
+    state.game = res.state;
+    await this.ctx.storage.put("state", state);
+    await this.broadcastHitlerState();
+  }
+
   async broadcastLitState() {
     const state = await this.ctx.storage.get("state");
     if (!state || state.gameType !== "lit") return;
@@ -773,6 +880,20 @@ function buildBluffSnapshot(state, viewerId) {
   }
   const view = redactBluff(state.game, viewerId);
   return { ...view, phase: "playing" };
+}
+
+// Build the snapshot we send to a Secret Hitler client. Pre-start it's the
+// lobby seat list; post-start it's a per-viewer redacted game view.
+function buildHitlerSnapshot(state, viewerId) {
+  const lobby = state?.lobby || [];
+  if (!state?.game) {
+    return {
+      phase: "lobby",
+      players: lobby,
+    };
+  }
+  const view = Hitler.redactFor(state.game, viewerId);
+  return { ...view, started: true };
 }
 
 function cors(response) {

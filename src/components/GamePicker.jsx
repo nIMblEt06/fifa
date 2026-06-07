@@ -23,6 +23,12 @@ export default function GamePicker({ onPick, onOpenHof }) {
       tagline: "CASH GAME",
       blurb: "Poker-night buy-in tracker. Count the chips, settle the net to Splitwise.",
     },
+    {
+      id: "undercover",
+      title: "UNDERCOVER",
+      tagline: "WHO IS THE SPY",
+      blurb: "Secret-word bluffing. Civilians, undercovers, and a clueless Mr. White. Describe, vote, survive.",
+    },
   ];
 
   const [customCode, setCustomCode] = useState("");

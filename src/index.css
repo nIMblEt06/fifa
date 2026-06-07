@@ -3299,6 +3299,8 @@ button.sh-policy:hover { outline: 3px solid var(--paper); }
 @media (max-width: 480px) {
   .sh-vote { font-size: 1.1rem; padding: 12px; }
   .sh-ring { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+}
+
 /* ── UNDERCOVER ───────────────────────────────────────────────────────── */
 .uc-roles { margin: 18px 0; }
 .uc-roles-title {

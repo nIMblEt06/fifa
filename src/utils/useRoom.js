@@ -54,11 +54,11 @@ export function useRoom(code, opts = {}) {
 
       ws.onopen = () => {
         setConnected(true);
-        // For server-authoritative games, re-identify on reconnect IF the
-        // user has already joined (we have their name cached). First-time
-        // joining is driven by sendAction({type:"join", name}) so the user
-        // controls when they take a seat.
-        if (game === "lit" && cid && pendingNameRef.current) {
+        // For server-authoritative games (lit, poker, …), re-identify on
+        // reconnect IF the user has already joined (we have their name
+        // cached). First-time joining is driven by sendAction({type:"join",
+        // name}) so the user controls when they take a seat.
+        if (cid && pendingNameRef.current) {
           try {
             ws.send(JSON.stringify({ type: "join", game, clientId: cid, name: pendingNameRef.current }));
           } catch { /* will retry on reconnect */ }

@@ -1,5 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import { startGame, applyAsk, applyDeclare, redactFor, healState, defaultTeams } from "../src/games/lit/engine.js";
+import {
+  createTable, startHand, applyAction, addChips, setSittingOut,
+  seatPlayer, cashOutPlayer, canStartHand, redactFor as redactPoker,
+} from "../src/games/poker/engine.js";
+import { getGroups, getGroupMembers, createSettlementExpense } from "./splitwise.js";
 
 // One Durable Object instance per room code. Owns:
 //   • persistent room state (storage)
@@ -18,11 +23,15 @@ import { startGame, applyAsk, applyDeclare, redactFor, healState, defaultTeams }
 export class RoomDO extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
-    const m = url.pathname.match(/^\/api\/room\/[A-Za-z0-9-]{2,32}\/(state|reaction|presence|ws)\/?$/);
+    const m = url.pathname.match(/^\/api\/room\/[A-Za-z0-9-]{2,32}\/(state|reaction|presence|ws|splitwise(?:\/[a-z]+)?)\/?$/);
     const action = m ? m[1].toLowerCase() : null;
 
     if (request.method === "OPTIONS") {
       return cors(new Response(null, { status: 204 }));
+    }
+
+    if (action && action.startsWith("splitwise")) {
+      return cors(await this.handleSplitwise(action, request));
     }
 
     if (action === "state") {
@@ -77,6 +86,10 @@ export class RoomDO extends DurableObject {
       if (gameType === "lit") {
         const payload = buildLitSnapshot(state, /* viewerId */ null);
         try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+      } else if (gameType === "poker" && state.v === 2) {
+        // Server-authoritative poker: spectator snapshot until the socket joins.
+        const payload = buildPokerSnapshot(state, /* viewerId */ null);
+        try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
       } else if (state) {
         // Client-authoritative games (FIFA, Poker, …): relay the raw blob.
         try { server.send(JSON.stringify({ type: "state", data: state })); } catch (_e) { void _e; }
@@ -98,9 +111,13 @@ export class RoomDO extends DurableObject {
     if (!msg || typeof msg !== "object") return;
 
     if (msg.type === "join") {
-      // { type: "join", game: "lit", clientId, name }
+      // { type: "join", game: "lit"|"poker", clientId, name, memberId? }
       const game = msg.game || "lit";
       ws.serializeAttachment({ clientId: msg.clientId, name: msg.name, game });
+      if (game === "poker") {
+        await this.handlePokerJoin(msg);
+        return;
+      }
       if (game === "lit") {
         await this.ensureLitState();
         const state = await this.ctx.storage.get("state");
@@ -132,6 +149,11 @@ export class RoomDO extends DurableObject {
         if (dirty) await this.ctx.storage.put("state", state);
         await this.broadcastLitState();
       }
+      return;
+    }
+
+    if (typeof msg.type === "string" && msg.type.startsWith("poker")) {
+      await this.handlePokerMessage(ws, msg);
       return;
     }
 
@@ -243,6 +265,337 @@ export class RoomDO extends DurableObject {
     this.broadcast({ type: "presence", count });
   }
 
+  // Poker (server-authoritative) ───────────────────────────────────────
+  //
+  // Room state shape (storage key "state"):
+  //   { gameType: "poker", v: 2, phase: "lobby"|"playing"|"results",
+  //     config: { ratio: {chips, money}, sb, bb, currency },
+  //     lobby: [{ id, name, memberId }],
+  //     table: <engine table> | null,
+  //     splitwise: { connected, via, userName, groupId, groupName, members } }
+  // The Splitwise OAuth token lives in a SEPARATE storage key ("swToken")
+  // so it can never leak through a state broadcast.
+
+  async ensurePokerState() {
+    let state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "poker" || state.v !== 2) {
+      state = {
+        gameType: "poker",
+        v: 2,
+        phase: "lobby",
+        config: { ratio: { chips: 5000, money: 250 }, sb: 25, bb: 50, currency: "INR" },
+        lobby: [],
+        table: null,
+        splitwise: { connected: false },
+      };
+    }
+    // Legacy fallback: a house token + group configured as Worker secrets
+    // keeps old-style rooms working with zero re-auth.
+    if (!state.splitwise?.connected && this.env.SPLITWISE_TOKEN && this.env.SPLITWISE_GROUP_ID) {
+      state.splitwise = {
+        connected: true,
+        via: "env",
+        userName: "house account",
+        groupId: Number(this.env.SPLITWISE_GROUP_ID),
+        groupName: null,
+        members: null,
+      };
+    }
+    await this.ctx.storage.put("state", state);
+    return state;
+  }
+
+  async pokerToken() {
+    return (await this.ctx.storage.get("swToken")) || this.env.SPLITWISE_TOKEN || null;
+  }
+
+  async handlePokerJoin(msg) {
+    const state = await this.ensurePokerState();
+    if (msg.name && msg.clientId) {
+      const player = { id: msg.clientId, name: String(msg.name).slice(0, 32), memberId: msg.memberId ?? null };
+      if (state.phase === "lobby") {
+        const existing = state.lobby.find((p) => p.id === player.id);
+        if (existing) {
+          existing.name = player.name;
+          if (msg.memberId !== undefined) existing.memberId = player.memberId;
+        } else {
+          state.lobby.push(player);
+        }
+      } else if (state.phase === "playing" && state.table) {
+        // Late joiner buys in for one standard stack; dealt in next hand.
+        const seated = state.table.seats.some((s) => s.id === player.id) ||
+          state.table.cashedOut.some((s) => s.id === player.id);
+        if (!seated) {
+          const res = seatPlayer(state.table, player, state.config.ratio.chips);
+          if (!res.error) state.table = res.table;
+        }
+      }
+    }
+    await this.ctx.storage.put("state", state);
+    await this.broadcastPokerState();
+  }
+
+  async handlePokerMessage(ws, msg) {
+    const fail = (message) => {
+      try { ws.send(JSON.stringify({ type: "error", message })); } catch (_e) { void _e; }
+    };
+    let att = null;
+    try { att = ws.deserializeAttachment(); } catch { /* none */ }
+    const me = att?.clientId;
+    if (!me) return fail("Join the room first");
+
+    const state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "poker" || state.v !== 2) return;
+
+    // A player may act for an ABSENT player (no live socket) — fold/check/sit-out
+    // only — so one vanished phone can't freeze the table.
+    const resolveActor = (forId) => {
+      if (!forId || forId === me) return me;
+      const connected = this.ctx.getWebSockets().some((sock) => {
+        try { return sock.deserializeAttachment()?.clientId === forId; } catch { return false; }
+      });
+      return connected ? null : forId;
+    };
+
+    switch (msg.type) {
+      case "pokerConfig": {
+        if (state.phase !== "lobby") return fail("Game already started");
+        const c = state.config;
+        const ratio = msg.ratio || {};
+        const chips = Math.max(1, Math.floor(Number(ratio.chips ?? c.ratio.chips) || 0));
+        const money = Math.max(0, Number(ratio.money ?? c.ratio.money) || 0);
+        const sb = Math.max(1, Math.floor(Number(msg.sb ?? c.sb) || 0));
+        const bb = Math.max(sb, Math.floor(Number(msg.bb ?? c.bb) || 0));
+        state.config = { ...c, ratio: { chips, money }, sb, bb };
+        break;
+      }
+      case "pokerStart": {
+        if (state.phase !== "lobby") return fail("Game already started");
+        if ((state.lobby || []).length < 2) return fail("Need at least 2 players");
+        try {
+          state.table = createTable(state.lobby, {
+            sb: state.config.sb,
+            bb: state.config.bb,
+            startingStack: state.config.ratio.chips,
+          });
+        } catch (e) {
+          return fail(e.message);
+        }
+        const res = startHand(state.table);
+        if (res.error) return fail(res.error);
+        state.table = res.table;
+        state.phase = "playing";
+        break;
+      }
+      case "pokerAction": {
+        if (state.phase !== "playing" || !state.table) return fail("No game in progress");
+        const actor = resolveActor(msg.forId);
+        if (!actor) return fail("That player is still connected");
+        if (msg.forId && msg.forId !== me && msg.move !== "fold" && msg.move !== "check") {
+          return fail("You can only fold or check for an absent player");
+        }
+        const res = applyAction(state.table, actor, { move: msg.move, amount: msg.amount });
+        if (res.error) return fail(res.error);
+        state.table = res.table;
+        break;
+      }
+      case "pokerNextHand": {
+        if (state.phase !== "playing" || !state.table) return fail("No game in progress");
+        if (!canStartHand(state.table)) return fail("Can't deal yet");
+        const res = startHand(state.table);
+        if (res.error) return fail(res.error);
+        state.table = res.table;
+        break;
+      }
+      case "pokerRebuy": {
+        if (state.phase !== "playing" || !state.table) return fail("No game in progress");
+        const res = addChips(state.table, me, msg.chips);
+        if (res.error) return fail(res.error);
+        state.table = res.table;
+        break;
+      }
+      case "pokerSitOut": {
+        if (state.phase !== "playing" || !state.table) return fail("No game in progress");
+        const actor = resolveActor(msg.forId);
+        if (!actor) return fail("That player is still connected");
+        const res = setSittingOut(state.table, actor, !!msg.out);
+        if (res.error) return fail(res.error);
+        state.table = res.table;
+        break;
+      }
+      case "pokerCashOut": {
+        if (state.phase !== "playing" || !state.table) return fail("No game in progress");
+        const res = cashOutPlayer(state.table, me);
+        if (res.error) return fail(res.error);
+        state.table = res.table;
+        break;
+      }
+      case "pokerLeave": {
+        if (state.phase === "lobby") {
+          state.lobby = (state.lobby || []).filter((p) => p.id !== me);
+        }
+        break;
+      }
+      case "pokerEndSession": {
+        if (state.phase !== "playing" || !state.table) return fail("No game in progress");
+        if (state.table.hand && !state.table.hand.results) return fail("Finish the current hand first");
+        state.phase = "results";
+        break;
+      }
+      case "pokerResume": {
+        if (state.phase !== "results") return fail("Nothing to resume");
+        state.phase = "playing";
+        break;
+      }
+      case "pokerReset": {
+        // Back to the lobby with the same crowd (seats + cashed-out, deduped).
+        const seen = new Set();
+        const lobby = [];
+        for (const s of [...(state.table?.seats || []), ...(state.table?.cashedOut || []), ...(state.lobby || [])]) {
+          if (seen.has(s.id)) continue;
+          seen.add(s.id);
+          lobby.push({ id: s.id, name: s.name, memberId: s.memberId ?? null });
+        }
+        state.phase = "lobby";
+        state.lobby = lobby;
+        state.table = null;
+        break;
+      }
+      default:
+        return fail("Unknown action");
+    }
+
+    await this.ctx.storage.put("state", state);
+    await this.broadcastPokerState();
+  }
+
+  async broadcastPokerState() {
+    const state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "poker" || state.v !== 2) return;
+    for (const ws of this.ctx.getWebSockets()) {
+      let viewerId = null;
+      try { viewerId = ws.deserializeAttachment()?.clientId || null; } catch { /* none */ }
+      const payload = buildPokerSnapshot(state, viewerId);
+      try { ws.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+    }
+  }
+
+  // Room-scoped Splitwise endpoints. The lobby creator's OAuth token is
+  // stored per-room (storage "swToken"); falls back to the legacy
+  // SPLITWISE_TOKEN/SPLITWISE_GROUP_ID Worker secrets when present.
+  async handleSplitwise(action, request) {
+    const sub = action.split("/")[1] || "status";
+
+    // Internal hand-off from the Worker's OAuth callback.
+    if (sub === "connect" && request.method === "POST") {
+      let body;
+      try { body = await request.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
+      if (!body?.token) return json({ error: "token required" }, 400);
+      const state = await this.ensurePokerState();
+      await this.ctx.storage.put("swToken", body.token);
+      state.splitwise = {
+        connected: true,
+        via: "oauth",
+        userName: body.userName || null,
+        groupId: null,
+        groupName: null,
+        members: null,
+      };
+      await this.ctx.storage.put("state", state);
+      await this.broadcastPokerState();
+      return json({ ok: true });
+    }
+
+    if (sub === "disconnect" && request.method === "POST") {
+      const state = await this.ensurePokerState();
+      await this.ctx.storage.delete("swToken");
+      state.splitwise = { connected: false };
+      await this.ctx.storage.put("state", state);
+      // ensurePokerState may immediately re-apply the env fallback; that's fine.
+      await this.broadcastPokerState();
+      return json({ ok: true });
+    }
+
+    // Status is read-only — must never convert a room that's hosting
+    // another game (crawlers / stray fetches included).
+    if (sub === "status" && request.method === "GET") {
+      const raw = await this.ctx.storage.get("state");
+      if (raw?.gameType === "poker" && raw.v === 2) return json(raw.splitwise || { connected: false });
+      if (this.env.SPLITWISE_TOKEN && this.env.SPLITWISE_GROUP_ID) {
+        return json({ connected: true, via: "env", groupId: Number(this.env.SPLITWISE_GROUP_ID) });
+      }
+      return json({ connected: false });
+    }
+
+    const state = await this.ensurePokerState();
+    const token = await this.pokerToken();
+
+    if (!token) return json({ error: "Splitwise not connected. The lobby creator should hit Connect Splitwise." }, 503);
+
+    if (sub === "groups" && request.method === "GET") {
+      try {
+        const groups = await getGroups(token);
+        return json(groups.map((g) => ({ id: g.id, name: g.name, memberCount: g.members.length })));
+      } catch (e) {
+        return json({ error: e.message }, 502);
+      }
+    }
+
+    if (sub === "group" && request.method === "POST") {
+      let body;
+      try { body = await request.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
+      const groupId = Number(body?.groupId);
+      if (!groupId) return json({ error: "groupId required" }, 400);
+      try {
+        const groups = await getGroups(token);
+        const group = groups.find((g) => g.id === groupId);
+        const members = group?.members ?? (await getGroupMembers(token, groupId));
+        state.splitwise = {
+          ...state.splitwise,
+          groupId,
+          groupName: group?.name ?? null,
+          members,
+        };
+        await this.ctx.storage.put("state", state);
+        await this.broadcastPokerState();
+        return json({ ok: true, members });
+      } catch (e) {
+        return json({ error: e.message }, 502);
+      }
+    }
+
+    if (sub === "members" && request.method === "GET") {
+      const groupId = state.splitwise?.groupId;
+      if (!groupId) return json({ error: "No group selected" }, 400);
+      if (state.splitwise.members) return json(state.splitwise.members);
+      try {
+        const members = await getGroupMembers(token, groupId);
+        state.splitwise.members = members;
+        await this.ctx.storage.put("state", state);
+        await this.broadcastPokerState();
+        return json(members);
+      } catch (e) {
+        return json({ error: e.message }, 502);
+      }
+    }
+
+    if (sub === "settle" && request.method === "POST") {
+      const groupId = state.splitwise?.groupId;
+      if (!groupId) return json({ error: "No Splitwise group selected" }, 400);
+      let body;
+      try { body = await request.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
+      const result = await createSettlementExpense(token, groupId, {
+        description: body?.description,
+        currency: body?.currency || state.config?.currency || "INR",
+        date: body?.date,
+        participants: Array.isArray(body?.participants) ? body.participants : [],
+      });
+      return json(result, result.ok ? 200 : 502);
+    }
+
+    return json({ error: "Not found" }, 404);
+  }
+
   // Helpers ─────────────────────────────────────────────────────────────
 
   async ensureLitState() {
@@ -279,6 +632,20 @@ export class RoomDO extends DurableObject {
       try { ws.send(data); } catch (_e) { void _e; }
     }
   }
+}
+
+// Build the snapshot we send to a poker client: public room info + the
+// per-viewer redacted table (own hole cards only). The Splitwise token is
+// stored outside `state` and can never appear here.
+function buildPokerSnapshot(state, viewerId) {
+  return {
+    gameType: "poker",
+    phase: state.phase,
+    config: state.config,
+    lobby: state.lobby || [],
+    splitwise: state.splitwise || { connected: false },
+    table: state.table ? redactPoker(state.table, viewerId) : null,
+  };
 }
 
 // Build the snapshot we send to a Lit client. Same shape pre- and post-start

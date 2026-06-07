@@ -3,15 +3,26 @@
 // (Vite-built React app + /teams.json + /favicon.svg).
 
 export { RoomDO } from "./RoomDO.js";
+import {
+  authorizeUrl, exchangeCode, getCurrentUser, getGroupMembers,
+  createSettlementExpense, signState, verifyState,
+} from "./splitwise.js";
 
 const ROUTE = /^\/api\/room\/([A-Za-z0-9-]{2,32})\/.+$/;
-const SPLITWISE_BASE = "https://secure.splitwise.com/api/v3.0";
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // ── Splitwise proxy (token stays server-side) ──────────────
+    // ── Splitwise OAuth (per-room: lobby creator connects their account) ──
+    if (url.pathname === "/api/splitwise/auth/start" && request.method === "GET") {
+      return splitwiseAuthStart(url, env);
+    }
+    if (url.pathname === "/api/splitwise/callback" && request.method === "GET") {
+      return splitwiseCallback(url, env);
+    }
+
+    // ── Legacy Splitwise proxy (house token via Worker secrets) ──────────
     if (url.pathname === "/api/splitwise/group" && request.method === "GET") {
       return cors(await splitwiseGroup(env));
     }
@@ -61,105 +72,86 @@ export default {
   },
 };
 
-// Returns the group members as [{ id, name }], or a clear error if the
-// Worker secrets are not configured.
+// ── Splitwise OAuth flow ───────────────────────────────────
+// 1. /api/splitwise/auth/start?room=CODE → 302 to Splitwise's consent page
+//    with an HMAC-signed `state` carrying the room code (CSRF-safe, stateless).
+// 2. /api/splitwise/callback?code&state → exchange the code for a token
+//    (Splitwise tokens never expire), hand it to the room's DO, bounce the
+//    browser back into the room.
+
+async function splitwiseAuthStart(url, env) {
+  if (!env.SPLITWISE_CLIENT_ID || !env.SPLITWISE_CLIENT_SECRET) {
+    return json({ error: "Splitwise OAuth not configured. Set SPLITWISE_CLIENT_ID and SPLITWISE_CLIENT_SECRET Worker secrets." }, 503);
+  }
+  const room = (url.searchParams.get("room") || "").toLowerCase();
+  if (!/^[a-z0-9-]{2,32}$/.test(room)) return json({ error: "Invalid room code" }, 400);
+  const redirectUri = `${url.origin}/api/splitwise/callback`;
+  const state = await signState(env.SPLITWISE_CLIENT_SECRET, {
+    room,
+    n: crypto.randomUUID(),
+    ts: Date.now(),
+  });
+  return Response.redirect(authorizeUrl(env.SPLITWISE_CLIENT_ID, redirectUri, state), 302);
+}
+
+async function splitwiseCallback(url, env) {
+  if (!env.SPLITWISE_CLIENT_ID || !env.SPLITWISE_CLIENT_SECRET) {
+    return json({ error: "Splitwise OAuth not configured" }, 503);
+  }
+  const payload = await verifyState(env.SPLITWISE_CLIENT_SECRET, url.searchParams.get("state"));
+  if (!payload?.room || !/^[a-z0-9-]{2,32}$/.test(payload.room)) {
+    return json({ error: "Invalid or tampered state" }, 400);
+  }
+  const back = (suffix = "") =>
+    Response.redirect(`${url.origin}/#/r/${payload.room}/poker${suffix}`, 302);
+  if (Date.now() - (payload.ts || 0) > 15 * 60 * 1000) return back("?sw=expired");
+
+  const code = url.searchParams.get("code");
+  if (!code) return back("?sw=denied"); // user clicked "deny" on Splitwise
+
+  try {
+    const token = await exchangeCode(env, code, `${url.origin}/api/splitwise/callback`);
+    const user = await getCurrentUser(token);
+    const id = env.ROOMS.idFromName(payload.room);
+    const res = await env.ROOMS.get(id).fetch(`https://do/api/room/${payload.room}/splitwise/connect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, userName: user.name }),
+    });
+    if (!res.ok) return back("?sw=error");
+    return back("?sw=connected");
+  } catch (e) {
+    void e;
+    return back("?sw=error");
+  }
+}
+
+// ── Legacy house-token endpoints (kept for old cached clients) ──────────
+
 async function splitwiseGroup(env) {
   if (!env.SPLITWISE_TOKEN || !env.SPLITWISE_GROUP_ID) {
     return json({ error: "Splitwise not configured. Set SPLITWISE_TOKEN and SPLITWISE_GROUP_ID Worker secrets." }, 503);
   }
-  let res;
   try {
-    res = await fetch(`${SPLITWISE_BASE}/get_group/${env.SPLITWISE_GROUP_ID}`, {
-      headers: { Authorization: `Bearer ${env.SPLITWISE_TOKEN}` },
-    });
+    return json(await getGroupMembers(env.SPLITWISE_TOKEN, env.SPLITWISE_GROUP_ID));
   } catch (e) {
-    return json({ error: `Splitwise request failed: ${e.message}` }, 502);
+    return json({ error: e.message }, 502);
   }
-  if (!res.ok) {
-    return json({ error: `Splitwise returned ${res.status}` }, 502);
-  }
-  const data = await res.json();
-  const members = (data?.group?.members || []).map((mbr) => ({
-    id: mbr.id,
-    name: [mbr.first_name, mbr.last_name].filter(Boolean).join(" ").trim() || mbr.email || `User ${mbr.id}`,
-  }));
-  return json(members);
 }
 
-// Body: { description, currency:"INR", date:"YYYY-MM-DD",
-//         participants: [{ userId, net }] }
-// where net > 0 = winner (they're owed), net < 0 = loser (they owe).
-// Creates ONE Splitwise expense covering the whole game: winners' paid_share
-// equals their winnings; losers' owed_share equals their losses; both sums = pot.
 async function splitwiseSettle(request, env) {
   if (!env.SPLITWISE_TOKEN || !env.SPLITWISE_GROUP_ID) {
     return json({ error: "Splitwise not configured. Set SPLITWISE_TOKEN and SPLITWISE_GROUP_ID Worker secrets." }, 503);
   }
   let body;
   try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
-  const description = body?.description || "Poker night settlement";
-  const currency = body?.currency || "INR";
-  const date = body?.date;
-  const participants = Array.isArray(body?.participants) ? body.participants : [];
-
-  const active = participants.filter((p) => p && p.userId && Math.abs(Number(p.net) || 0) > 0.005);
-  if (active.length === 0) return json({ error: "No non-zero participants to settle" }, 400);
-
-  const winners = active.filter((p) => Number(p.net) > 0);
-  const losers = active.filter((p) => Number(p.net) < 0);
-  if (winners.length === 0 || losers.length === 0) {
-    return json({ error: "Need at least one winner and one loser to settle" }, 400);
-  }
-
-  const totalPaid = winners.reduce((s, p) => s + Number(p.net), 0);
-  const totalOwed = losers.reduce((s, p) => s - Number(p.net), 0);
-  // Cost should match both sums; tiny rounding drift gets folded into the largest winner.
-  const cost = Math.max(totalPaid, totalOwed);
-  const drift = Number((totalPaid - totalOwed).toFixed(2));
-
-  const params = new URLSearchParams({
-    cost: cost.toFixed(2),
-    description,
-    group_id: String(env.SPLITWISE_GROUP_ID),
-    currency_code: currency,
+  const result = await createSettlementExpense(env.SPLITWISE_TOKEN, env.SPLITWISE_GROUP_ID, {
+    description: body?.description,
+    currency: body?.currency,
+    date: body?.date,
+    participants: Array.isArray(body?.participants) ? body.participants : [],
   });
-  if (date) params.set("date", date);
-
-  // Fold any cents-level rounding drift into the largest winner's paid_share so
-  // sum(paid_share) === sum(owed_share) === cost. (Splitwise rejects mismatches.)
-  const largestWinnerIdx = winners.reduce(
-    (best, p, i) => (Number(p.net) > Number(winners[best].net) ? i : best),
-    0
-  );
-
-  active.forEach((p, i) => {
-    let net = Number(p.net);
-    if (net > 0 && winners.indexOf(p) === largestWinnerIdx) net -= drift;
-    const paid = net > 0 ? net.toFixed(2) : "0.00";
-    const owed = net < 0 ? (-net).toFixed(2) : "0.00";
-    params.set(`users__${i}__user_id`, String(p.userId));
-    params.set(`users__${i}__paid_share`, paid);
-    params.set(`users__${i}__owed_share`, owed);
-  });
-
-  try {
-    const res = await fetch(`${SPLITWISE_BASE}/create_expense`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.SPLITWISE_TOKEN}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: params,
-    });
-    const data = await res.json().catch(() => ({}));
-    const errs = data?.errors && Object.keys(data.errors).length ? data.errors : null;
-    if (!res.ok || errs) {
-      return json({ ok: false, error: errs ? JSON.stringify(errs) : `HTTP ${res.status}` });
-    }
-    return json({ ok: true, expenseId: data?.expenses?.[0]?.id ?? null, cost });
-  } catch (e) {
-    return json({ ok: false, error: e.message });
-  }
+  return json(result, result.ok ? 200 : 400);
 }
 
 // ── Roster ─────────────────────────────────────────────────

@@ -1472,6 +1472,25 @@ tbody tr.qualified td:nth-child(1) {
   font-size: 12px;
 }
 
+.custom-room-toggle {
+  display: block;
+  margin: 8px 0 24px;
+  padding: 10px 0 0;
+  border: 0;
+  border-top: 1px solid var(--dim);
+  width: 100%;
+  text-align: left;
+  background: none;
+  color: var(--paper);
+  font-family: var(--mono, inherit);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  opacity: 0.45;
+  cursor: pointer;
+}
+.custom-room-toggle:hover { opacity: 1; color: var(--hot); }
+
 .custom-room {
   margin-top: 8px;
   padding: 18px 0 24px;

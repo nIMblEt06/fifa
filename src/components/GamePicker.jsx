@@ -43,6 +43,10 @@ export default function GamePicker({ onPick, onOpenHof }) {
     },
   ];
 
+  // Custom-named rooms are a power-user thing (recurring event rooms like
+  // el-crapico) — hidden behind a small disclosure so the landing page is
+  // just the game tiles.
+  const [customOpen, setCustomOpen] = useState(false);
   const [customCode, setCustomCode] = useState("");
   const [customGame, setCustomGame] = useState("fifa");
   const normalized = useMemo(() => normalizeCode(customCode), [customCode]);
@@ -85,13 +89,23 @@ export default function GamePicker({ onPick, onOpenHof }) {
           )}
         </div>
 
+        {!customOpen ? (
+          <button
+            type="button"
+            className="custom-room-toggle"
+            onClick={() => setCustomOpen(true)}
+          >
+            + CUSTOM ROOM
+          </button>
+        ) : (
         <form className="custom-room" onSubmit={submit}>
-          <div className="custom-room-label">OR OPEN A CUSTOM ROOM</div>
+          <div className="custom-room-label">OPEN A CUSTOM ROOM</div>
           <div className="custom-room-row">
             <input
               className="custom-room-input"
               type="text"
-              placeholder="el-crapico"
+              placeholder="room-name"
+              autoFocus
               value={customCode}
               onChange={(e) => setCustomCode(e.target.value)}
               maxLength={32}
@@ -118,6 +132,7 @@ export default function GamePicker({ onPick, onOpenHof }) {
             </div>
           )}
         </form>
+        )}
       </main>
     </div>
   );

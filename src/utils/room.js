@@ -6,7 +6,7 @@
 // EL-CRAPICO and el-crapico hit the same room.
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I, O, 0, 1 — readable
-const GAMES = ["fifa", "lit", "poker"];
+const GAMES = ["fifa", "lit", "poker", "hitler"];
 const DEFAULT_GAME = "fifa";
 export const CODE_RE = /^[A-Za-z0-9-]{2,32}$/;
 

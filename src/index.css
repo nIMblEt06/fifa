@@ -2723,3 +2723,257 @@ tbody tr.qualified td:nth-child(1) {
   .activity-log { margin-top: 14px; padding-top: 10px; }
   .log-row { font-size: 12px; padding: 5px 8px; }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   SECRET HITLER
+   ───────────────────────────────────────────────────────────── */
+
+.sh-app main { padding-bottom: 2rem; }
+
+.sh-attribution {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mute);
+  text-align: center;
+  padding: 1rem 1.25rem 0.5rem;
+}
+
+.sh-lobby-note {
+  margin-top: 1rem;
+  line-height: 1.5;
+  font-size: 0.85rem;
+}
+
+/* Tracks ─────────────────────────────────────────────────────── */
+.sh-tracks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 1rem 0 1.25rem;
+}
+.sh-track-label {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
+}
+.sh-track-lib .sh-track-label { color: var(--live); }
+.sh-track-fas .sh-track-label { color: var(--shame); }
+.sh-track-slots { display: flex; gap: 6px; }
+.sh-slot {
+  flex: 1;
+  height: 34px;
+  border: 2px solid var(--dim);
+  background: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.sh-slot.filled.lib { background: var(--live); border-color: var(--live); }
+.sh-slot.filled.fas { background: var(--shame); border-color: var(--shame); }
+.sh-slot-power {
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--warn);
+}
+
+.sh-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.sh-tracker { display: inline-flex; align-items: center; gap: 6px; }
+.sh-tracker-dot {
+  display: inline-block;
+  width: 11px; height: 11px;
+  border: 2px solid var(--mute);
+  border-radius: 50%;
+}
+.sh-tracker-dot.on { background: var(--warn); border-color: var(--warn); }
+
+/* Role card ──────────────────────────────────────────────────── */
+.sh-role {
+  border: 2px solid var(--paper);
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 1rem;
+}
+.sh-role.lib { border-color: var(--live); }
+.sh-role.fas { border-color: var(--shame); }
+.sh-role.dead { opacity: 0.6; }
+.sh-role-head {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.sh-role.lib .sh-role-head strong { color: var(--live); }
+.sh-role.fas .sh-role-head strong { color: var(--shame); }
+.sh-dead-tag { color: var(--shame); font-weight: 800; }
+.sh-role-known {
+  margin-top: 0.5rem;
+  font-size: 0.82rem;
+  color: var(--paper);
+}
+.sh-known-name {
+  display: inline-block;
+  background: var(--shame);
+  color: var(--ink);
+  font-weight: 800;
+  padding: 1px 7px;
+  margin: 2px 4px 2px 0;
+}
+.sh-role-spectator {
+  border: 2px dashed var(--mute);
+  color: var(--mute);
+  padding: 0.75rem;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  margin-bottom: 1rem;
+}
+
+/* Players ring ───────────────────────────────────────────────── */
+.sh-ring {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 1.25rem;
+}
+.sh-seat {
+  border: 2px solid var(--dim);
+  padding: 8px 10px;
+  background: var(--ink);
+}
+.sh-seat.is-me { border-color: var(--hot); }
+.sh-seat.pres { border-color: var(--warn); }
+.sh-seat.chanc { border-color: var(--live); }
+.sh-seat.dead { opacity: 0.45; text-decoration: line-through; }
+.sh-seat-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+.sh-seat-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.sh-tag {
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 1px 5px;
+}
+.sh-tag.dead { background: var(--shame); }
+
+/* Phase panel ────────────────────────────────────────────────── */
+.sh-panel {
+  border: 2px solid var(--paper);
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+}
+.sh-panel-title {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 0.85rem;
+}
+.sh-waiting { border-style: dashed; border-color: var(--mute); }
+
+.sh-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+}
+.sh-choice {
+  border: 2px solid var(--paper);
+  background: var(--ink);
+  color: var(--paper);
+  padding: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: var(--body);
+}
+.sh-choice:not(:disabled):hover { background: var(--hot); color: var(--hot-ink); border-color: var(--hot); }
+.sh-choice.disabled, .sh-choice:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.sh-vote-buttons { display: flex; gap: 12px; }
+.sh-vote {
+  flex: 1;
+  padding: 16px;
+  font-family: var(--display);
+  font-size: 1.4rem;
+  letter-spacing: 0.04em;
+  border: 3px solid var(--paper);
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+.sh-vote.ja:hover { background: var(--live); color: var(--ink); border-color: var(--live); }
+.sh-vote.nein:hover { background: var(--shame); color: var(--ink); border-color: var(--shame); }
+.sh-vote-progress { margin-top: 0.75rem; text-align: center; }
+
+.sh-cards { display: flex; gap: 12px; flex-wrap: wrap; }
+.sh-cards-static { margin-bottom: 1rem; }
+.sh-policy {
+  flex: 1;
+  min-width: 90px;
+  min-height: 120px;
+  border: 3px solid var(--ink);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--display);
+  font-size: 1.1rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  color: var(--ink);
+}
+.sh-policy.liberal { background: var(--live); }
+.sh-policy.fascist { background: var(--shame); }
+div.sh-policy { cursor: default; }
+.sh-policy-x {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 2px 8px;
+}
+button.sh-policy:hover { outline: 3px solid var(--paper); }
+
+.sh-veto-btn { margin-top: 0.9rem; }
+
+.sh-investigation {
+  font-size: 1rem;
+  padding: 0.5rem 0;
+}
+.sh-investigation .lib, .winner-sets.lib { color: var(--live); }
+.sh-investigation .fas, .winner-sets.fas { color: var(--shame); }
+.lib { color: var(--live); }
+.fas { color: var(--shame); }
+
+/* Game over ──────────────────────────────────────────────────── */
+.sh-winner.lib::before { background: var(--live); }
+.sh-winner.fas::before { background: var(--shame); }
+
+@media (max-width: 480px) {
+  .sh-vote { font-size: 1.1rem; padding: 12px; }
+  .sh-ring { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+}

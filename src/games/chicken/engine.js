@@ -173,9 +173,12 @@ export function simTick(state, tapsBySeat = {}) {
   if (state.results) return state;
   state.tick += 1;
 
-  // Leader position BEFORE this tick (slipstream reference).
-  const leaderPos = Math.max(...state.lanes.map((l) => l.pos));
-  const sortedPos = state.lanes.map((l) => l.pos).sort((a, b) => b - a);
+  // Leader position BEFORE this tick (slipstream reference), among LIVE racers
+  // only — a chicken parked at the finish line must not hand everyone still
+  // running a permanent draft off a phantom leader.
+  const livePos = state.lanes.filter((l) => l.finishTick === null).map((l) => l.pos);
+  const leaderPos = livePos.length ? Math.max(...livePos) : 0;
+  const sortedPos = livePos.slice().sort((a, b) => b - a);
   const clearLeader = sortedPos.length > 1 && sortedPos[0] - sortedPos[1] >= LEADER_CLEAR_BY;
 
   for (const p of state.players) {

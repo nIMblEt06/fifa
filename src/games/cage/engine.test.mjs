@@ -3,9 +3,9 @@
 import assert from "node:assert/strict";
 import {
   createMatch, step, snapshot, predictPlayer,
-  ARENA, GOAL_W, PLAYER_R, BALL_R, LOSE_AT, FREEZE_TICKS, MAX_MATCH_TICKS,
+  ARENA, GOAL_W, PLAYER_R, BALL_R, LOSE_AT, FREEZE_TICKS, GOAL_FREEZE_TICKS, MAX_MATCH_TICKS,
   KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_KICK,
-  KICK_CD_TICKS, MAX_SPEED,
+  KICK_CD_TICKS, MAX_SPEED, BALL_MAX_SPEED,
 } from "./engine.js";
 
 let passed = 0;
@@ -162,7 +162,8 @@ test("ball through an open mouth scores and resets with a freeze", () => {
   const m = thaw(createMatch(SIDES4));
   scoreOn(m, 0);
   assert.equal(m.sides[0].conceded, 1);
-  assert.equal(m.freeze, FREEZE_TICKS, "post-goal freeze");
+  assert.equal(m.freeze, GOAL_FREEZE_TICKS, "post-goal freeze (shorter than kickoff)");
+  assert.ok(GOAL_FREEZE_TICKS < FREEZE_TICKS, "goal reset is snappier than the opening countdown");
   assert.ok(Math.abs(m.balls[0].x - ARENA / 2) < 1, "balls re-centered");
   const ev = m.events[m.events.length - 1];
   assert.equal(ev.kind, "goal");
@@ -222,6 +223,57 @@ test("two-side duel: one elimination ends the match", () => {
   }
   assert.ok(m.results, "duel over after one elimination");
   assert.equal(m.results[0].wall, 3);
+});
+
+console.log("hardening");
+
+test("two balls scoring different walls on the same tick both count", () => {
+  const m = thaw(createMatch(SIDES4));
+  const mid = ARENA / 2;
+  // ball 0 exits the top mouth, ball 1 exits the right mouth, same tick.
+  m.balls[0].x = mid; m.balls[0].y = BALL_R + 2; m.balls[0].vx = 0; m.balls[0].vy = -8;
+  m.balls[1].x = ARENA - BALL_R - 2; m.balls[1].y = mid; m.balls[1].vx = 8; m.balls[1].vy = 0;
+  // keep every player clear of both ball lines
+  m.players.forEach((p, i) => { p.x = 80 + i * 30; p.y = 450; p.vx = 0; p.vy = 0; });
+  step(m, {});
+  assert.equal(m.sides[0].conceded, 1, "top conceded");
+  assert.equal(m.sides[1].conceded, 1, "right conceded — second goal not dropped");
+  assert.equal(m.events.filter((e) => e.kind === "goal").length, 2, "two goal events");
+});
+
+test("ball velocity is capped on every live tick (anti-tunnel)", () => {
+  let m = createMatch(SIDES4);
+  const rng = mulberry32(4242);
+  let live = 0;
+  while (live < 200) {
+    if (m.results) { m = createMatch(SIDES4); continue; }
+    if (m.freeze > 0) { step(m, {}); continue; } // balls rest during freeze; nothing to cap
+    // shove a ball with an absurd velocity, then confirm a single live step
+    // can never leave it moving faster than the hard cap.
+    const b = m.balls[Math.floor(rng() * m.balls.length)];
+    b.vx = (rng() - 0.5) * 100;
+    b.vy = (rng() - 0.5) * 100;
+    step(m, { a: KEY_KICK, b: KEY_KICK | KEY_UP, c: KEY_KICK | KEY_LEFT, d: KEY_KICK });
+    for (const ball of m.balls) {
+      assert.ok(Math.hypot(ball.vx, ball.vy) <= BALL_MAX_SPEED + 1e-9, "ball over speed cap");
+    }
+    live++;
+  }
+});
+
+test("ball↔ball collision handles more than two balls", () => {
+  const m = thaw(createMatch(SIDES4));
+  m.players.forEach((p) => { p.x = 80; p.y = 80; p.vx = 0; p.vy = 0; });
+  // Two overlapping balls in the open, plus a third isolated one (len 3).
+  m.balls = [
+    { x: 300, y: 300, vx: 0, vy: 0 },
+    { x: 302, y: 300, vx: 0, vy: 0 },
+    { x: 100, y: 400, vx: 0, vy: 0 },
+  ];
+  step(m, {});
+  for (const b of m.balls) assert.ok(Number.isFinite(b.x) && Number.isFinite(b.y), "ball NaN");
+  const d01 = Math.hypot(m.balls[1].x - m.balls[0].x, m.balls[1].y - m.balls[0].y);
+  assert.ok(d01 >= BALL_R * 2 - 1e-6, `overlapping pair separated (d=${d01.toFixed(1)})`);
 });
 
 console.log("misc");

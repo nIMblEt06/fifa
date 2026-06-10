@@ -169,6 +169,23 @@ test("draft bonus is capped and helps the trailer close the gap", () => {
   void DRAFT_MAX;
 });
 
+test("a finished racer grants no draft to those still running", () => {
+  const r = createRace(P(2), mulberry32(81));
+  for (const lane of r.track.lanes) { lane.mud = []; lane.worms = []; }
+  // s0 has already crossed the line and is parked there; s1 is mid-track.
+  r.lanes[0].finishTick = 1;
+  r.lanes[0].pos = TRACK_LEN;
+  r.lanes[1].pos = 500;
+  r.lanes[1].rate = 10;            // steady 10 taps/s
+  const before = r.lanes[1].pos;
+  simTick(r, { s0: 0, s1: 1 });    // 1 tap → instRate 10/s, EMA stays 10
+  // With the phantom finished leader excluded, s1 is its own (lone) leader:
+  // no draft, no headwind → exactly rate · SPEED_PER_TAP.
+  const advanced = r.lanes[1].pos - before;
+  assert.ok(Math.abs(advanced - 10 * 0.42) < 1e-9,
+    `lone live racer gets base speed, not a phantom draft (advanced ${advanced.toFixed(3)})`);
+});
+
 console.log("hazards");
 
 test("mud slows, worm boosts", () => {

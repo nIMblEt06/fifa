@@ -29,18 +29,20 @@ export const MIN_SIDES = 2;
 export const MAX_PER_SIDE = 2;
 export const LOSE_AT = 5;               // conceded goals → eliminated
 
-export const ACCEL = 0.55;              // per tick, applied along input dir
+export const ACCEL = 0.75;              // per tick, applied along input dir
 export const FRICTION = 0.88;           // player velocity damping per tick
-export const MAX_SPEED = 5.2;           // player units/tick
+export const MAX_SPEED = 5.2;           // player units/tick (now reachable: terminal ≈ ACCEL·F/(1−F) ≈ 5.5)
 export const BALL_FRICTION = 0.985;     // rolling resistance
 export const WALL_RESTITUTION = 0.92;
 export const BALL_PLAYER_PUSH = 1.05;   // body-touch transfer of player velocity
 export const BALL_MIN_SPEED = 0.02;     // below this the ball stops
+export const BALL_MAX_SPEED = 16;       // hard cap so accumulated pushes/kicks can't tunnel
 export const KICK_RANGE = PLAYER_R + BALL_R + 10;
 export const KICK_POWER = 11;
 export const KICK_CARRY = 0.35;         // fraction of player velocity added
 export const KICK_CD_TICKS = 9;         // 0.3s
-export const FREEZE_TICKS = 45;         // 1.5s after each goal
+export const FREEZE_TICKS = 45;         // 1.5s opening countdown
+export const GOAL_FREEZE_TICKS = 30;    // 1.0s reset pause after each goal (snappier than the kickoff)
 export const MAX_MATCH_TICKS = TICK_RATE * 600; // 10 min hard stop
 
 // Walls / sides, indexed 0..3. Each wall owns one goal mouth.
@@ -131,6 +133,16 @@ function pushEvent(state, e) {
   if (state.events.length > 30) state.events.splice(0, state.events.length - 30);
 }
 
+// Bound a ball's velocity so kicks-on-kicks, body pushes and ball↔ball swaps
+// can't compound into a speed that skips through a wall in one tick.
+function clampBallSpeed(ball) {
+  const s = Math.hypot(ball.vx, ball.vy);
+  if (s > BALL_MAX_SPEED) {
+    ball.vx = (ball.vx / s) * BALL_MAX_SPEED;
+    ball.vy = (ball.vy / s) * BALL_MAX_SPEED;
+  }
+}
+
 function activeSides(state) {
   return state.sides.filter((s) => !s.eliminated);
 }
@@ -154,7 +166,7 @@ function resetPositions(state) {
     p.x = at.x; p.y = at.y; p.vx = 0; p.vy = 0; p.kickCd = 0;
   }
   state.balls = ballSpawns();
-  state.freeze = FREEZE_TICKS;
+  state.freeze = GOAL_FREEZE_TICKS;
 }
 
 function finishMatch(state) {
@@ -249,13 +261,17 @@ export function step(state, inputsBySeat = {}) {
     }
     best.vx = aimX * KICK_POWER + p.vx * KICK_CARRY;
     best.vy = aimY * KICK_POWER + p.vy * KICK_CARRY;
+    clampBallSpeed(best);
     p.kickCd = KICK_CD_TICKS;
     p.kickedTick = state.tick;
   }
 
   // ── Balls ───────────────────────────────────────────────────────
-  let scoredWall = null;
+  // Each ball scores at most once per tick (the first open mouth it crosses);
+  // several balls finding open goals on the same tick all count.
+  const scoredWalls = [];
   for (const ball of state.balls) {
+    clampBallSpeed(ball);          // bound travel this tick (anti-tunnel)
     ball.x += ball.vx;
     ball.y += ball.vy;
     ball.vx *= BALL_FRICTION;
@@ -263,23 +279,26 @@ export function step(state, inputsBySeat = {}) {
     if (Math.hypot(ball.vx, ball.vy) < BALL_MIN_SPEED) { ball.vx = 0; ball.vy = 0; }
 
     // Walls + goals. A ball whose center crosses a wall inside an OPEN mouth
-    // scores against that wall's side; otherwise it bounces.
+    // scores against that wall's side; otherwise it bounces. `goalWall` latches
+    // per ball so a corner crossing can't double-count one ball.
+    let goalWall = null;
     if (ball.y < BALL_R) {
-      if (mouthOpen(state, 0) && inMouth(ball.x) && scoredWall === null) scoredWall = 0;
+      if (goalWall === null && mouthOpen(state, 0) && inMouth(ball.x)) goalWall = 0;
       else { ball.y = BALL_R; ball.vy = Math.abs(ball.vy) * WALL_RESTITUTION; }
     }
     if (ball.y > ARENA - BALL_R) {
-      if (mouthOpen(state, 2) && inMouth(ball.x) && scoredWall === null) scoredWall = 2;
+      if (goalWall === null && mouthOpen(state, 2) && inMouth(ball.x)) goalWall = 2;
       else { ball.y = ARENA - BALL_R; ball.vy = -Math.abs(ball.vy) * WALL_RESTITUTION; }
     }
     if (ball.x < BALL_R) {
-      if (mouthOpen(state, 3) && inMouth(ball.y) && scoredWall === null) scoredWall = 3;
+      if (goalWall === null && mouthOpen(state, 3) && inMouth(ball.y)) goalWall = 3;
       else { ball.x = BALL_R; ball.vx = Math.abs(ball.vx) * WALL_RESTITUTION; }
     }
     if (ball.x > ARENA - BALL_R) {
-      if (mouthOpen(state, 1) && inMouth(ball.y) && scoredWall === null) scoredWall = 1;
+      if (goalWall === null && mouthOpen(state, 1) && inMouth(ball.y)) goalWall = 1;
       else { ball.x = ARENA - BALL_R; ball.vx = -Math.abs(ball.vx) * WALL_RESTITUTION; }
     }
+    if (goalWall !== null) scoredWalls.push(goalWall);
 
     // Ball↔player: push out + reflect, inheriting body velocity.
     for (const p of alive) {
@@ -297,37 +316,56 @@ export function step(state, inputsBySeat = {}) {
         }
         ball.vx += p.vx * BALL_PLAYER_PUSH * 0.5;
         ball.vy += p.vy * BALL_PLAYER_PUSH * 0.5;
+        clampBallSpeed(ball);
       }
     }
   }
 
-  // Ball↔ball (elastic swap along the normal).
-  const [b1, b2] = state.balls;
-  {
-    const dx = b2.x - b1.x, dy = b2.y - b1.y;
-    const d = Math.hypot(dx, dy);
-    const min = BALL_R * 2;
-    if (d > 0 && d < min) {
-      const nx = dx / d, ny = dy / d;
-      const push = (min - d) / 2;
-      b1.x -= nx * push; b1.y -= ny * push;
-      b2.x += nx * push; b2.y += ny * push;
-      const v1n = b1.vx * nx + b1.vy * ny;
-      const v2n = b2.vx * nx + b2.vy * ny;
-      b1.vx += (v2n - v1n) * nx; b1.vy += (v2n - v1n) * ny;
-      b2.vx += (v1n - v2n) * nx; b2.vy += (v1n - v2n) * ny;
+  // Ball↔ball (elastic swap along the normal) — all pairs, so the engine is
+  // correct for any number of balls, not only two.
+  for (let i = 0; i < state.balls.length; i++) {
+    for (let j = i + 1; j < state.balls.length; j++) {
+      const b1 = state.balls[i], b2 = state.balls[j];
+      const dx = b2.x - b1.x, dy = b2.y - b1.y;
+      const d = Math.hypot(dx, dy);
+      const min = BALL_R * 2;
+      if (d > 0 && d < min) {
+        const nx = dx / d, ny = dy / d;
+        const push = (min - d) / 2;
+        b1.x -= nx * push; b1.y -= ny * push;
+        b2.x += nx * push; b2.y += ny * push;
+        const v1n = b1.vx * nx + b1.vy * ny;
+        const v2n = b2.vx * nx + b2.vy * ny;
+        b1.vx += (v2n - v1n) * nx; b1.vy += (v2n - v1n) * ny;
+        b2.vx += (v1n - v2n) * nx; b2.vy += (v1n - v2n) * ny;
+        clampBallSpeed(b1); clampBallSpeed(b2);
+      }
     }
   }
 
-  // ── Goal! ───────────────────────────────────────────────────────
-  if (scoredWall !== null) {
-    const side = sideByWall(state, scoredWall);
-    side.conceded += 1;
-    pushEvent(state, { kind: "goal", wall: scoredWall, conceded: side.conceded });
-    if (side.conceded >= LOSE_AT) {
-      side.eliminated = true;
-      side.eliminatedAtTick = state.tick;
-      pushEvent(state, { kind: "eliminated", wall: scoredWall });
+  // Safety net: a ball that scored (passes through its mouth) or one shoved by
+  // a wall-pinned body can land a center a few units past the boundary. Goals
+  // are already recorded above, so keep every ball inside the cage for the
+  // snapshot — no ball is ever drawn in or beyond a wall.
+  for (const ball of state.balls) {
+    ball.x = Math.max(BALL_R, Math.min(ARENA - BALL_R, ball.x));
+    ball.y = Math.max(BALL_R, Math.min(ARENA - BALL_R, ball.y));
+  }
+
+  // ── Goals ────────────────────────────────────────────────────────
+  // Apply every ball that scored this tick (usually one); a side already
+  // sealed this tick by an earlier goal can't be conceded against twice.
+  if (scoredWalls.length > 0) {
+    for (const wall of scoredWalls) {
+      const side = sideByWall(state, wall);
+      if (!side || side.eliminated) continue;
+      side.conceded += 1;
+      pushEvent(state, { kind: "goal", wall, conceded: side.conceded });
+      if (side.conceded >= LOSE_AT) {
+        side.eliminated = true;
+        side.eliminatedAtTick = state.tick;
+        pushEvent(state, { kind: "eliminated", wall });
+      }
     }
     if (activeSides(state).length <= 1) {
       finishMatch(state);

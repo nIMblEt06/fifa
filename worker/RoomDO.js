@@ -568,24 +568,12 @@ export class RoomDO extends DurableObject {
         splitwise: { connected: false },
       };
     }
-    // Legacy fallback: a house token + group configured as Worker secrets
-    // keeps old-style rooms working with zero re-auth.
-    if (!state.splitwise?.connected && this.env.SPLITWISE_TOKEN && this.env.SPLITWISE_GROUP_ID) {
-      state.splitwise = {
-        connected: true,
-        via: "env",
-        userName: "house account",
-        groupId: Number(this.env.SPLITWISE_GROUP_ID),
-        groupName: null,
-        members: null,
-      };
-    }
+    // Mirror the canonical, game-agnostic Splitwise connection (storage key
+    // "swConfig", env fallback included) into the poker snapshot so PokerApp
+    // keeps reading `view.splitwise` unchanged.
+    state.splitwise = await this.splitwiseConfig();
     await this.ctx.storage.put("state", state);
     return state;
-  }
-
-  async pokerToken() {
-    return (await this.ctx.storage.get("swToken")) || this.env.SPLITWISE_TOKEN || null;
   }
 
   async handlePokerJoin(msg) {
@@ -759,9 +747,47 @@ export class RoomDO extends DurableObject {
     }
   }
 
-  // Room-scoped Splitwise endpoints. The lobby creator's OAuth token is
-  // stored per-room (storage "swToken"); falls back to the legacy
-  // SPLITWISE_TOKEN/SPLITWISE_GROUP_ID Worker secrets when present.
+  // The canonical, game-agnostic Splitwise connection. Stored under "swConfig"
+  // (token lives separately under the secret "swToken"). Falls back to the
+  // legacy SPLITWISE_TOKEN/SPLITWISE_GROUP_ID Worker secrets when present so old
+  // rooms keep working with zero re-auth. Never touches the game "state" key, so
+  // it's safe for both client-authoritative (FIFA) and server-authoritative
+  // (poker) rooms.
+  async splitwiseConfig() {
+    const cfg = await this.ctx.storage.get("swConfig");
+    if (cfg) return cfg;
+    if (this.env.SPLITWISE_TOKEN && this.env.SPLITWISE_GROUP_ID) {
+      return {
+        connected: true,
+        via: "env",
+        userName: "house account",
+        groupId: Number(this.env.SPLITWISE_GROUP_ID),
+        groupName: null,
+        members: null,
+      };
+    }
+    return { connected: false };
+  }
+
+  async splitwiseToken() {
+    return (await this.ctx.storage.get("swToken")) || this.env.SPLITWISE_TOKEN || null;
+  }
+
+  // Persist a new connection config, then notify everyone. Poker rooms get it
+  // mirrored into their snapshot (PokerApp reads `view.splitwise`); every client
+  // (FIFA included) also receives a lightweight `splitwise` event.
+  async putSplitwiseConfig(cfg) {
+    await this.ctx.storage.put("swConfig", cfg);
+    const raw = await this.ctx.storage.get("state");
+    if (raw?.gameType === "poker" && raw.v === 2) {
+      raw.splitwise = cfg;
+      await this.ctx.storage.put("state", raw);
+      await this.broadcastPokerState();
+    }
+    this.broadcast({ type: "splitwise", data: cfg });
+  }
+
+  // Room-scoped Splitwise endpoints. Used by both poker and FIFA.
   async handleSplitwise(action, request) {
     const sub = action.split("/")[1] || "status";
 
@@ -770,46 +796,33 @@ export class RoomDO extends DurableObject {
       let body;
       try { body = await request.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
       if (!body?.token) return json({ error: "token required" }, 400);
-      const state = await this.ensurePokerState();
       await this.ctx.storage.put("swToken", body.token);
-      state.splitwise = {
+      await this.putSplitwiseConfig({
         connected: true,
         via: "oauth",
         userName: body.userName || null,
         groupId: null,
         groupName: null,
         members: null,
-      };
-      await this.ctx.storage.put("state", state);
-      await this.broadcastPokerState();
+      });
       return json({ ok: true });
     }
 
     if (sub === "disconnect" && request.method === "POST") {
-      const state = await this.ensurePokerState();
       await this.ctx.storage.delete("swToken");
-      state.splitwise = { connected: false };
-      await this.ctx.storage.put("state", state);
-      // ensurePokerState may immediately re-apply the env fallback; that's fine.
-      await this.broadcastPokerState();
+      await this.ctx.storage.delete("swConfig");
+      await this.putSplitwiseConfig(await this.splitwiseConfig());
       return json({ ok: true });
     }
 
-    // Status is read-only — must never convert a room that's hosting
-    // another game (crawlers / stray fetches included).
+    // Read-only — safe to hit from any room/game.
     if (sub === "status" && request.method === "GET") {
-      const raw = await this.ctx.storage.get("state");
-      if (raw?.gameType === "poker" && raw.v === 2) return json(raw.splitwise || { connected: false });
-      if (this.env.SPLITWISE_TOKEN && this.env.SPLITWISE_GROUP_ID) {
-        return json({ connected: true, via: "env", groupId: Number(this.env.SPLITWISE_GROUP_ID) });
-      }
-      return json({ connected: false });
+      return json(await this.splitwiseConfig());
     }
 
-    const state = await this.ensurePokerState();
-    const token = await this.pokerToken();
-
-    if (!token) return json({ error: "Splitwise not connected. The lobby creator should hit Connect Splitwise." }, 503);
+    const token = await this.splitwiseToken();
+    if (!token) return json({ error: "Splitwise not connected. Whoever runs the books should hit Connect Splitwise." }, 503);
+    const cfg = await this.splitwiseConfig();
 
     if (sub === "groups" && request.method === "GET") {
       try {
@@ -829,29 +842,21 @@ export class RoomDO extends DurableObject {
         const groups = await getGroups(token);
         const group = groups.find((g) => g.id === groupId);
         const members = group?.members ?? (await getGroupMembers(token, groupId));
-        state.splitwise = {
-          ...state.splitwise,
-          groupId,
-          groupName: group?.name ?? null,
-          members,
-        };
-        await this.ctx.storage.put("state", state);
-        await this.broadcastPokerState();
-        return json({ ok: true, members });
+        const next = { ...cfg, connected: true, groupId, groupName: group?.name ?? null, members };
+        await this.putSplitwiseConfig(next);
+        return json({ ok: true, groupId, groupName: next.groupName, members });
       } catch (e) {
         return json({ error: e.message }, 502);
       }
     }
 
     if (sub === "members" && request.method === "GET") {
-      const groupId = state.splitwise?.groupId;
+      const groupId = cfg.groupId;
       if (!groupId) return json({ error: "No group selected" }, 400);
-      if (state.splitwise.members) return json(state.splitwise.members);
+      if (cfg.members) return json(cfg.members);
       try {
         const members = await getGroupMembers(token, groupId);
-        state.splitwise.members = members;
-        await this.ctx.storage.put("state", state);
-        await this.broadcastPokerState();
+        await this.putSplitwiseConfig({ ...cfg, members });
         return json(members);
       } catch (e) {
         return json({ error: e.message }, 502);
@@ -859,13 +864,13 @@ export class RoomDO extends DurableObject {
     }
 
     if (sub === "settle" && request.method === "POST") {
-      const groupId = state.splitwise?.groupId;
+      const groupId = cfg.groupId;
       if (!groupId) return json({ error: "No Splitwise group selected" }, 400);
       let body;
       try { body = await request.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
       const result = await createSettlementExpense(token, groupId, {
         description: body?.description,
-        currency: body?.currency || state.config?.currency || "INR",
+        currency: body?.currency || cfg.currency || "INR",
         date: body?.date,
         participants: Array.isArray(body?.participants) ? body.participants : [],
       });

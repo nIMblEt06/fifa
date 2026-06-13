@@ -1,7 +1,7 @@
 import MatchCard from "./MatchCard";
 import StandingsTable from "./StandingsTable";
 
-function SingleGroup({ matches, players, teamsByName, onOpenMatch }) {
+function SingleGroup({ matches, players, teamsByName, onOpenMatch, betting }) {
   const completed = matches.filter((m) => m.completed).length;
   const total = matches.length;
   const nextIdx = matches.findIndex((m) => !m.completed);
@@ -23,6 +23,7 @@ function SingleGroup({ matches, players, teamsByName, onOpenMatch }) {
             teamsByName={teamsByName}
             onOpen={onOpenMatch}
             isNext={i === nextIdx}
+            betting={betting}
           />
         ))}
       </div>
@@ -38,6 +39,7 @@ export default function GroupStage({
   players,
   teamsByName,
   onOpenMatch,
+  betting,
 }) {
   // Single-group legacy path.
   if (!groups) {
@@ -47,6 +49,7 @@ export default function GroupStage({
         players={players}
         teamsByName={teamsByName}
         onOpenMatch={onOpenMatch}
+        betting={betting}
       />
     );
   }
@@ -81,6 +84,7 @@ export default function GroupStage({
                     teamsByName={teamsByName}
                     onOpen={onOpenMatch}
                     isNext={i === nextIdx}
+                    betting={betting}
                   />
                 ))}
               </div>

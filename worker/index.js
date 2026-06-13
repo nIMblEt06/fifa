@@ -79,15 +79,22 @@ export default {
 //    (Splitwise tokens never expire), hand it to the room's DO, bounce the
 //    browser back into the room.
 
+// Games that own a Splitwise connection. The callback bounces the browser back
+// to the right one; unknown/absent → "poker" so old cached links keep working.
+const SW_GAMES = ["poker", "fifa"];
+
 async function splitwiseAuthStart(url, env) {
   if (!env.SPLITWISE_CLIENT_ID || !env.SPLITWISE_CLIENT_SECRET) {
     return json({ error: "Splitwise OAuth not configured. Set SPLITWISE_CLIENT_ID and SPLITWISE_CLIENT_SECRET Worker secrets." }, 503);
   }
   const room = (url.searchParams.get("room") || "").toLowerCase();
   if (!/^[a-z0-9-]{2,32}$/.test(room)) return json({ error: "Invalid room code" }, 400);
+  const gameRaw = (url.searchParams.get("game") || "poker").toLowerCase();
+  const game = SW_GAMES.includes(gameRaw) ? gameRaw : "poker";
   const redirectUri = `${url.origin}/api/splitwise/callback`;
   const state = await signState(env.SPLITWISE_CLIENT_SECRET, {
     room,
+    game,
     n: crypto.randomUUID(),
     ts: Date.now(),
   });
@@ -102,8 +109,9 @@ async function splitwiseCallback(url, env) {
   if (!payload?.room || !/^[a-z0-9-]{2,32}$/.test(payload.room)) {
     return json({ error: "Invalid or tampered state" }, 400);
   }
+  const game = SW_GAMES.includes(payload.game) ? payload.game : "poker";
   const back = (suffix = "") =>
-    Response.redirect(`${url.origin}/#/r/${payload.room}/poker${suffix}`, 302);
+    Response.redirect(`${url.origin}/#/r/${payload.room}/${game}${suffix}`, 302);
   if (Date.now() - (payload.ts || 0) > 15 * 60 * 1000) return back("?sw=expired");
 
   const code = url.searchParams.get("code");

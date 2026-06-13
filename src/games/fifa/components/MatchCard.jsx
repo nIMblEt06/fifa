@@ -24,12 +24,33 @@ function Slot({ player, teamsByName, side }) {
   );
 }
 
-export default function MatchCard({ match, players, teamsByName, onOpen, isLive, isNext }) {
+const CUR_SYM = { INR: "₹", USD: "$", EUR: "€", GBP: "£" };
+
+export default function MatchCard({ match, players, teamsByName, onOpen, isLive, isNext, betting }) {
   const home = match.home != null ? players[match.home] : null;
   const away = match.away != null ? players[match.away] : null;
   const isBye = match.bye;
   // A match is playable only when both slots are filled and it's not a bye.
   const playable = !isBye && home && away;
+
+  // Betting chip — shown when Splitwise is connected and both sides are known.
+  const bettable = betting?.active && !isBye && home && away;
+  const betSummary = bettable ? betting.summary?.[match.id] : null;
+  const kickedOff = bettable && !!betting.kicked?.[match.id]?.kickedOffAt;
+  const sym = CUR_SYM[betting?.currency] || "";
+  let chipLabel = null;
+  let chipCls = "";
+  if (bettable) {
+    if (match.completed) {
+      if (betSummary?.pool) { chipLabel = "SETTLE BETS"; chipCls = "settle"; }
+    } else if (kickedOff) {
+      chipLabel = "BETS LOCKED"; chipCls = "locked";
+    } else if (betSummary?.pool) {
+      chipLabel = `POOL ${sym}${betSummary.pool.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+    } else {
+      chipLabel = "+ BET";
+    }
+  }
 
   const homeWin = match.completed && (isBye ? home : match.homeScore > match.awayScore);
   const awayWin = match.completed && (isBye ? away : match.awayScore > match.homeScore);
@@ -68,6 +89,15 @@ export default function MatchCard({ match, players, teamsByName, onOpen, isLive,
         <div className="score-block pending">—</div>
       )}
       <Slot player={away} teamsByName={teamsByName} side="away" />
+      {chipLabel && (
+        <button
+          type="button"
+          className={"match-bet-chip " + chipCls}
+          onClick={(e) => { e.stopPropagation(); betting.onOpen(match); }}
+        >
+          {chipLabel}
+        </button>
+      )}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import Reactions from "../../components/Reactions";
 import { shareUrl, clientId } from "../../utils/room";
 import { useRoom } from "../../utils/useRoom";
 import { computeNets, imbalance, isBalanced, computeSettlement, moneyPerChip } from "./money";
-import MemberCombobox from "./MemberCombobox";
+import MemberCombobox from "../../components/MemberCombobox";
 
 const SUIT_GLYPH = { S: "♠", H: "♥", D: "♦", C: "♣" };
 const firstName = (name) => (name || "").toLowerCase().trim().split(/\s+/)[0] || "";

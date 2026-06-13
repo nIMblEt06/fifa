@@ -21,6 +21,7 @@ export default function KnockoutBracket({
   teamsByName,
   onOpenMatch,
   champion,
+  betting,
 }) {
   // Generalized multi-round bracket (group format).
   if (rounds) {
@@ -42,6 +43,7 @@ export default function KnockoutBracket({
                   players={players}
                   teamsByName={teamsByName}
                   onOpen={onOpenMatch}
+                  betting={betting}
                 />
               ))}
             </div>
@@ -71,6 +73,7 @@ export default function KnockoutBracket({
               players={players}
               teamsByName={teamsByName}
               onOpen={onOpenMatch}
+              betting={betting}
             />
           ))}
         </div>
@@ -85,6 +88,7 @@ export default function KnockoutBracket({
               players={players}
               teamsByName={teamsByName}
               onOpen={onOpenMatch}
+              betting={betting}
             />
           </div>
         </div>

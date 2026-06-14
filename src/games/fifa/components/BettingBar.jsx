@@ -8,7 +8,7 @@ import { useState, useEffect, useCallback } from "react";
 const CURRENCIES = ["INR", "USD", "EUR", "GBP"];
 const CUR_SYM = { INR: "₹", USD: "$", EUR: "€", GBP: "£" };
 
-const STATUS_TEXT = { needs: "SETTLE", done: "SETTLED", locked: "LOCKED", open: "OPEN" };
+const STATUS_TEXT = { needs: "SETTLE", done: "SETTLED", void: "NO PAYOUT", locked: "LOCKED", open: "OPEN" };
 
 export default function BettingBar({ code, sw, currency, onSetCurrency, ledger, onOpenMatch }) {
   const lc = code.toLowerCase();

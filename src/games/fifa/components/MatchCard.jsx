@@ -36,13 +36,17 @@ export default function MatchCard({ match, players, teamsByName, onOpen, isLive,
   // Betting chip — shown when Splitwise is connected and both sides are known.
   const bettable = betting?.active && !isBye && home && away;
   const betSummary = bettable ? betting.summary?.[match.id] : null;
+  const betStatus = bettable ? betting.status?.[match.id]?.status : null;
   const kickedOff = bettable && !!betting.kicked?.[match.id]?.kickedOffAt;
   const sym = CUR_SYM[betting?.currency] || "";
   let chipLabel = null;
   let chipCls = "";
   if (bettable) {
     if (match.completed) {
-      if (betSummary?.pool) { chipLabel = "SETTLE BETS"; chipCls = "settle"; }
+      // Driven by real settlement state, not just "has a pool".
+      if (betStatus === "needs") { chipLabel = "SETTLE BETS"; chipCls = "settle"; }
+      else if (betStatus === "done") { chipLabel = "SETTLED"; chipCls = "settled"; }
+      else if (betStatus === "void") { chipLabel = "NO PAYOUT"; chipCls = "void"; }
     } else if (kickedOff) {
       chipLabel = "BETS LOCKED"; chipCls = "locked";
     } else if (betSummary?.pool) {

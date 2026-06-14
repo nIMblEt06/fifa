@@ -92,9 +92,13 @@ export async function createSettlementExpense(token, groupId, { description, cur
 
   const totalPaid = winners.reduce((s, p) => s + Number(p.net), 0);
   const totalOwed = losers.reduce((s, p) => s - Number(p.net), 0);
-  // Cost should match both sums; tiny rounding drift gets folded into the largest winner.
-  const cost = Math.max(totalPaid, totalOwed);
+  // Pari-mutuel rounding leaves the winners' shares drifting a cent or two off
+  // the losers' clean stake total. We fold that drift into the largest winner's
+  // paid_share below, so AFTER the fold both sides total exactly `totalOwed`.
+  // `cost` must equal that reconciled total — using max() here left cost a cent
+  // above both share sums and Splitwise rejected the expense.
   const drift = Number((totalPaid - totalOwed).toFixed(2));
+  const cost = Number(totalOwed.toFixed(2));
 
   const params = new URLSearchParams({
     cost: cost.toFixed(2),

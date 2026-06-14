@@ -8,7 +8,7 @@ import Scorer from "./components/Scorer";
 import WallOfShame from "./components/WallOfShame";
 import BettingBar from "./components/BettingBar";
 import BetMatchModal from "./components/BetMatchModal";
-import { computeMarketNets, round2 } from "./bets";
+import { computeMarketNets, resultOutcomeFromScore, round2 } from "./bets";
 import Marquee from "../../components/Marquee";
 import Reactions from "../../components/Reactions";
 import { generateFixtures, computeStandings } from "./utils/fixtures";
@@ -262,12 +262,16 @@ export default function FifaApp({ code, onLeave }) {
     return out;
   }, [marketsByMatch]);
 
-  // Every match that has any stake on it, with its settlement status — feeds the
-  // always-visible settle dropdown so bets from earlier stages (group games once
-  // the knockout is on screen, a semi during the final) can still be settled,
-  // edited, or reviewed. Needs-settling rows sort to the top.
-  const betLedger = useMemo(() => {
-    const rows = [];
+  // Per-match settlement status, the single source of truth for the match chip
+  // and the settle dropdown. A completed Match Result market whose auto-winner
+  // has no payable split (e.g. a draw with no draw backers) is "void" — there is
+  // genuinely nothing to settle — distinct from "needs" (money still owed).
+  //   needs  → completed, a real payout is still outstanding
+  //   done   → at least one market settled, nothing outstanding
+  //   void   → completed, every market resolved to nothing-to-settle
+  //   open   → still bettable; locked → kicked off, not yet played
+  const betStatusByMatch = useMemo(() => {
+    const out = {};
     for (const [mid, mks] of Object.entries(marketsByMatch)) {
       const withBets = mks.filter((mk) => mk.bets.some((b) => Number(b.stake) > 0));
       if (withBets.length === 0) continue;
@@ -276,30 +280,46 @@ export default function FifaApp({ code, onLeave }) {
       let pool = 0;
       let needs = 0;
       let settled = 0;
+      let voided = 0;
       for (const mk of withBets) {
         for (const b of mk.bets) if (Number(b.stake) > 0) pool += Number(b.stake);
         const s = mk.settlement;
-        if (s?.sent) settled++;
-        else if (s?.void) settled++; // resolved as void — nothing owed, counts as done
-        else if (m.completed) needs++; // completed but unresolved (incl. send errors)
+        if (s?.sent) { settled++; continue; }
+        if (s?.void) { voided++; continue; }
+        if (!m.completed) continue; // open / locked — not settleable yet
+        // Completed and unresolved. A result market's winner is known from the
+        // score, so we can tell now whether it's payable; a custom market always
+        // needs a human to pick the winner.
+        if (mk.kind === "result" && computeMarketNets(mk.bets, resultOutcomeFromScore(m)).length === 0) {
+          voided++;
+          continue;
+        }
+        needs++;
       }
       const kickedOff = !!betting.matches?.[mid]?.kickedOffAt;
-      const status = needs > 0 ? "needs" : m.completed ? "done" : kickedOff ? "locked" : "open";
-      const legSuffix = m.leg != null ? ` · Leg ${m.leg + 1}` : "";
-      rows.push({
-        matchId: mid,
-        label: matchLabel(m) + legSuffix,
-        pool: round2(pool),
-        status,
-        markets: withBets.length,
-        needs,
-        settled,
-      });
+      const status =
+        needs > 0 ? "needs"
+        : !m.completed ? (kickedOff ? "locked" : "open")
+        : settled > 0 ? "done"
+        : "void";
+      out[mid] = { pool: round2(pool), needs, settled, voided, status };
     }
-    const rank = { needs: 0, open: 1, locked: 1, done: 2 };
-    rows.sort((a, b) => (rank[a.status] - rank[b.status]) || a.label.localeCompare(b.label));
-    return rows;
-  }, [marketsByMatch, matchById, matchLabel, betting.matches]);
+    return out;
+  }, [marketsByMatch, matchById, betting.matches]);
+
+  // Rows for the always-visible settle dropdown — every match with stake on it,
+  // across all stages, needs-to-settle first. Lets people settle (or just
+  // review) bets from earlier rounds no longer on screen.
+  const betLedger = useMemo(() => {
+    const rank = { needs: 0, open: 1, locked: 1, void: 2, done: 3 };
+    return Object.entries(betStatusByMatch)
+      .map(([mid, st]) => {
+        const m = matchById[mid];
+        const legSuffix = m.leg != null ? ` · Leg ${m.leg + 1}` : "";
+        return { matchId: mid, label: matchLabel(m) + legSuffix, pool: st.pool, status: st.status };
+      })
+      .sort((a, b) => (rank[a.status] - rank[b.status]) || a.label.localeCompare(b.label));
+  }, [betStatusByMatch, matchById, matchLabel]);
 
   const updateBetting = useCallback(
     (fn) => {
@@ -456,7 +476,7 @@ export default function FifaApp({ code, onLeave }) {
   );
 
   const bettingProps = bettingActive
-    ? { active: true, summary: betSummary, kicked: betting.matches || {}, currency: betting.currency || "INR", onOpen: openBets }
+    ? { active: true, summary: betSummary, status: betStatusByMatch, kicked: betting.matches || {}, currency: betting.currency || "INR", onOpen: openBets }
     : null;
 
   // ── Hall-of-Fame auto-save ────────────────────────────────

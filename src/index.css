@@ -3699,6 +3699,8 @@ button.sh-policy:hover { outline: 3px solid var(--paper); }
 .match-bet-chip:hover { filter: brightness(1.1); }
 .match-bet-chip.locked { background: var(--dim); color: var(--mute); }
 .match-bet-chip.settle { background: var(--live); color: var(--hot-ink); }
+.match-bet-chip.settled { background: transparent; color: var(--live); border: 1px solid var(--live); }
+.match-bet-chip.void { background: transparent; color: var(--mute); border: 1px solid var(--dim); }
 
 /* ── Two-legged knockout ties ─────────────────────────────── */
 .match-leg-tag {
@@ -3786,6 +3788,8 @@ button.sh-policy:hover { outline: 3px solid var(--paper); }
 .fifa-bet-row.done { opacity: 0.6; }
 .fifa-bet-row.done .fbr-dot { background: var(--mute); }
 .fifa-bet-row.done .fbr-tag::before { content: "✓ "; }
+.fifa-bet-row.void { opacity: 0.55; }
+.fifa-bet-row.void .fbr-dot { background: var(--dim); }
 .fifa-bet-row.locked .fbr-dot,
 .fifa-bet-row.open .fbr-dot { background: var(--warn); }
 

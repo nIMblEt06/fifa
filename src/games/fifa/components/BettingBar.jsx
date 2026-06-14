@@ -6,8 +6,11 @@ import { useState, useEffect, useCallback } from "react";
 // connection status flow to every client via the room's `splitwise` broadcast
 // (handled in FifaApp), so this component just kicks off the fetches.
 const CURRENCIES = ["INR", "USD", "EUR", "GBP"];
+const CUR_SYM = { INR: "₹", USD: "$", EUR: "€", GBP: "£" };
 
-export default function BettingBar({ code, sw, currency, onSetCurrency }) {
+const STATUS_TEXT = { needs: "SETTLE", done: "SETTLED", locked: "LOCKED", open: "OPEN" };
+
+export default function BettingBar({ code, sw, currency, onSetCurrency, ledger, onOpenMatch }) {
   const lc = code.toLowerCase();
   const connected = !!sw?.connected;
   const groupId = sw?.groupId;
@@ -16,6 +19,11 @@ export default function BettingBar({ code, sw, currency, onSetCurrency }) {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [showLedger, setShowLedger] = useState(false);
+
+  const rows = ledger || [];
+  const needsCount = rows.filter((r) => r.status === "needs").length;
+  const sym = CUR_SYM[currency] || "";
 
   const needsGroup = connected && !groupId;
 
@@ -106,6 +114,40 @@ export default function BettingBar({ code, sw, currency, onSetCurrency }) {
                 </button>
               ))}
             </div>
+          )}
+        </div>
+      )}
+
+      {connected && groupId && rows.length > 0 && (
+        <div className="fifa-bet-ledger">
+          <button
+            type="button"
+            className="fifa-bet-ledger-toggle"
+            aria-expanded={showLedger}
+            onClick={() => setShowLedger((v) => !v)}
+          >
+            <span className="caret">{showLedger ? "▾" : "▸"}</span>
+            ALL BETS <span className="muted">· {rows.length}</span>
+            {needsCount > 0 && <span className="fifa-bet-badge">{needsCount} TO SETTLE</span>}
+          </button>
+
+          {showLedger && (
+            <ul className="fifa-bet-ledger-list">
+              {rows.map((r) => (
+                <li key={r.matchId}>
+                  <button
+                    type="button"
+                    className={"fifa-bet-row " + r.status}
+                    onClick={() => onOpenMatch?.(r.matchId)}
+                  >
+                    <span className="fbr-dot" aria-hidden />
+                    <span className="fbr-label">{r.label}</span>
+                    <span className="fbr-pool">{sym}{r.pool.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                    <span className="fbr-tag">{STATUS_TEXT[r.status]}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       )}

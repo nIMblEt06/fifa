@@ -13,10 +13,15 @@ function memberName(members, id) {
   return m ? m.name : `#${id}`;
 }
 
-function PlaceBet({ market, members, currency, onPlaceBet }) {
-  const [memberId, setMemberId] = useState("");
-  const [outcomeId, setOutcomeId] = useState("");
-  const [stake, setStake] = useState("");
+// `initial` (a bet being edited) seeds the form; it's keyed by the parent so a
+// new `initial` remounts this with fresh state. Because one member holds at most
+// one bet per market, re-placing for the same member overwrites — that IS the
+// edit. `onCancelEdit` drops back to a blank form.
+function PlaceBet({ market, members, currency, onPlaceBet, initial, onCancelEdit }) {
+  const [memberId, setMemberId] = useState(initial?.memberId ?? "");
+  const [outcomeId, setOutcomeId] = useState(initial?.outcomeId ?? "");
+  const [stake, setStake] = useState(initial?.stake != null ? String(initial.stake) : "");
+  const editing = !!initial;
   const ready = memberId && outcomeId && Number(stake) > 0;
 
   const submit = () => {
@@ -27,11 +32,13 @@ function PlaceBet({ market, members, currency, onPlaceBet }) {
       outcomeId,
       stake: Math.round(Number(stake) * 100) / 100,
     });
-    setStake(""); // keep member + outcome for quick repeat entry
+    if (editing) onCancelEdit?.();
+    else setStake(""); // keep member + outcome for quick repeat entry
   };
 
   return (
-    <div className="bm-place">
+    <div className={"bm-place" + (editing ? " editing" : "")}>
+      {editing && <div className="bm-place-tag">Editing bet</div>}
       <MemberCombobox members={members || []} value={memberId} onChange={setMemberId} />
       <div className="bm-outcomes">
         {market.outcomes.map((o) => (
@@ -57,18 +64,25 @@ function PlaceBet({ market, members, currency, onPlaceBet }) {
           onKeyDown={(e) => e.key === "Enter" && submit()}
         />
         <button className="bm-place-btn" disabled={!ready} onClick={submit}>
-          Place {Number(stake) > 0 ? money(stake, currency) : "bet"}
+          {editing ? "Save" : "Place"} {Number(stake) > 0 ? money(stake, currency) : "bet"}
         </button>
+        {editing && (
+          <button type="button" className="bm-place-cancel" onClick={onCancelEdit}>
+            Cancel
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function MarketCard({ market, match, members, currency, locked, completed, onPlaceBet, onSettle }) {
+function MarketCard({ market, match, members, currency, locked, completed, onPlaceBet, onRemoveBet, onSettle }) {
   const pools = poolByOutcome(market.bets);
   const total = marketPool(market.bets);
   const settled = market.settlement;
   const isResult = market.kind === "result";
+  const editable = !locked && !completed;
+  const [editBet, setEditBet] = useState(null);
 
   const autoWin = isResult ? resultOutcomeFromScore(match) : null;
   const [winSel, setWinSel] = useState("");
@@ -101,22 +115,53 @@ function MarketCard({ market, match, members, currency, locked, completed, onPla
       </div>
 
       {market.bets.length > 0 && (
-        <ul className="bm-bets">
+        <ul className={"bm-bets" + (editable ? " editable" : "")}>
           {market.bets.map((b) => {
             const o = market.outcomes.find((x) => x.id === b.outcomeId);
             return (
-              <li key={b.id}>
+              <li key={b.id} className={editBet?.id === b.id ? "editing" : ""}>
                 <span className="bm-bet-who">{b.memberName || memberName(members, b.memberId)}</span>
                 <span className="bm-bet-on">{o?.label || b.outcomeId}</span>
                 <span className="bm-bet-amt">{money(b.stake, currency)}</span>
+                {editable && (
+                  <span className="bm-bet-actions">
+                    <button
+                      type="button"
+                      className="bm-bet-edit"
+                      title="Edit bet"
+                      onClick={() => setEditBet(b)}
+                    >
+                      edit
+                    </button>
+                    <button
+                      type="button"
+                      className="bm-bet-del"
+                      title="Delete bet"
+                      onClick={() => {
+                        if (editBet?.id === b.id) setEditBet(null);
+                        onRemoveBet(market.id, b.id);
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                )}
               </li>
             );
           })}
         </ul>
       )}
 
-      {!locked && !completed && (
-        <PlaceBet market={market} members={members} currency={currency} onPlaceBet={onPlaceBet} />
+      {editable && (
+        <PlaceBet
+          key={editBet?.id || "new"}
+          market={market}
+          members={members}
+          currency={currency}
+          onPlaceBet={onPlaceBet}
+          initial={editBet}
+          onCancelEdit={() => setEditBet(null)}
+        />
       )}
 
       {completed && (
@@ -211,7 +256,7 @@ function AddMarket({ onAdd, onCancel }) {
 
 export default function BetMatchModal({
   match, matchLabel, markets, kickedOffAt, members, currency,
-  onPlaceBet, onAddMarket, onKickOff, onSettle, onClose,
+  onPlaceBet, onRemoveBet, onAddMarket, onKickOff, onSettle, onClose,
 }) {
   const locked = !!kickedOffAt;
   const completed = !!match.completed;
@@ -242,6 +287,7 @@ export default function BetMatchModal({
               locked={locked}
               completed={completed}
               onPlaceBet={onPlaceBet}
+              onRemoveBet={onRemoveBet}
               onSettle={onSettle}
             />
           ))}

@@ -8,7 +8,7 @@ import Scorer from "./components/Scorer";
 import WallOfShame from "./components/WallOfShame";
 import BettingBar from "./components/BettingBar";
 import BetMatchModal from "./components/BetMatchModal";
-import { computeMarketNets } from "./bets";
+import { computeMarketNets, round2 } from "./bets";
 import Marquee from "../../components/Marquee";
 import Reactions from "../../components/Reactions";
 import { generateFixtures, computeStandings } from "./utils/fixtures";
@@ -17,6 +17,9 @@ import {
   seedQualifiers,
   buildKnockout,
   advanceKnockout,
+  groupLegTies,
+  tieComplete,
+  tieWinner,
 } from "./utils/groups";
 import { buildHeadlines, buildShame } from "./utils/headlines";
 import { useTeams } from "./utils/useTeams";
@@ -259,6 +262,45 @@ export default function FifaApp({ code, onLeave }) {
     return out;
   }, [marketsByMatch]);
 
+  // Every match that has any stake on it, with its settlement status — feeds the
+  // always-visible settle dropdown so bets from earlier stages (group games once
+  // the knockout is on screen, a semi during the final) can still be settled,
+  // edited, or reviewed. Needs-settling rows sort to the top.
+  const betLedger = useMemo(() => {
+    const rows = [];
+    for (const [mid, mks] of Object.entries(marketsByMatch)) {
+      const withBets = mks.filter((mk) => mk.bets.some((b) => Number(b.stake) > 0));
+      if (withBets.length === 0) continue;
+      const m = matchById[mid];
+      if (!m) continue;
+      let pool = 0;
+      let needs = 0;
+      let settled = 0;
+      for (const mk of withBets) {
+        for (const b of mk.bets) if (Number(b.stake) > 0) pool += Number(b.stake);
+        const s = mk.settlement;
+        if (s?.sent) settled++;
+        else if (s?.void) settled++; // resolved as void — nothing owed, counts as done
+        else if (m.completed) needs++; // completed but unresolved (incl. send errors)
+      }
+      const kickedOff = !!betting.matches?.[mid]?.kickedOffAt;
+      const status = needs > 0 ? "needs" : m.completed ? "done" : kickedOff ? "locked" : "open";
+      const legSuffix = m.leg != null ? ` · Leg ${m.leg + 1}` : "";
+      rows.push({
+        matchId: mid,
+        label: matchLabel(m) + legSuffix,
+        pool: round2(pool),
+        status,
+        markets: withBets.length,
+        needs,
+        settled,
+      });
+    }
+    const rank = { needs: 0, open: 1, locked: 1, done: 2 };
+    rows.sort((a, b) => (rank[a.status] - rank[b.status]) || a.label.localeCompare(b.label));
+    return rows;
+  }, [marketsByMatch, matchById, matchLabel, betting.matches]);
+
   const updateBetting = useCallback(
     (fn) => {
       update((prev) => {
@@ -281,7 +323,10 @@ export default function FifaApp({ code, onLeave }) {
         if (b.markets[id]) return b;
         const homeName = players[match.home]?.name ?? "Home";
         const awayName = players[match.away]?.name ?? "Away";
-        const allowDraw = String(match.id).startsWith("group"); // knockout = no draws
+        // Group games can draw, and so can a single leg of a two-legged tie
+        // (the tie is decided on aggregate, not the leg). Only one-off knockout
+        // matches — the final — forbid draws.
+        const allowDraw = String(match.id).startsWith("group") || match.tie != null;
         const outcomes = [
           { id: "home", label: homeName },
           ...(allowDraw ? [{ id: "draw", label: "Draw" }] : []),
@@ -307,6 +352,16 @@ export default function FifaApp({ code, onLeave }) {
     [ensureResultMarket]
   );
 
+  // Open the bet modal for a match by id (used by the settle dropdown, which
+  // can reach matches from any stage — including ones no longer on screen).
+  const openBetsById = useCallback(
+    (matchId) => {
+      const m = matchById[matchId];
+      if (m) openBets(m);
+    },
+    [matchById, openBets]
+  );
+
   const placeBet = useCallback(
     (marketId, bet) => {
       updateBetting((b) => {
@@ -316,6 +371,20 @@ export default function FifaApp({ code, onLeave }) {
         const others = mk.bets.filter((x) => String(x.memberId) !== String(bet.memberId));
         const entry = { id: `b_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, ...bet };
         return patchMarket(b, marketId, { bets: [...others, entry] });
+      });
+    },
+    [updateBetting]
+  );
+
+  // Remove a placed bet — only allowed while the match is still open (betting
+  // not locked by kickoff). Editing is delete + re-place via the same form.
+  const removeBet = useCallback(
+    (marketId, betId) => {
+      updateBetting((b) => {
+        const mk = b.markets[marketId];
+        if (!mk) return b;
+        if (b.matches[mk.matchId]?.kickedOffAt) return b; // betting closed
+        return patchMarket(b, marketId, { bets: mk.bets.filter((x) => x.id !== betId) });
       });
     },
     [updateBetting]
@@ -659,9 +728,13 @@ export default function FifaApp({ code, onLeave }) {
           m.id === matchId ? { ...m, homeScore: h, awayScore: a, completed: true, playedAt: ts } : m
         );
         let newFinal = prev.finalMatch;
-        if (updatedSemis.every((m) => m.completed)) {
-          const w0 = updatedSemis[0].homeScore > updatedSemis[0].awayScore ? updatedSemis[0].home : updatedSemis[0].away;
-          const w1 = updatedSemis[1].homeScore > updatedSemis[1].awayScore ? updatedSemis[1].home : updatedSemis[1].away;
+        // Each semi is a two-legged tie (legacy single-match data groups as a
+        // singleton tie, so old in-progress brackets keep working). Build the
+        // final from the two tie winners once both ties are complete.
+        const ties = groupLegTies(updatedSemis);
+        if (ties.every(tieComplete)) {
+          const w0 = tieWinner(ties[0]);
+          const w1 = tieWinner(ties[1]);
           newFinal = { id: "final", home: w0, away: w1, homeScore: 0, awayScore: 0, completed: false };
         }
         return { ...prev, semiFinals: updatedSemis, finalMatch: newFinal };
@@ -697,9 +770,15 @@ export default function FifaApp({ code, onLeave }) {
     }
 
     const top4 = standings.slice(0, 4);
+    // Each semi is played over two legs (home & away), so the higher seed gets
+    // the second leg at home. The final stays a single match.
+    const semiLegs = (n, hi, lo) => [
+      { id: `semi-${n}-l0`, home: lo, away: hi, homeScore: 0, awayScore: 0, completed: false, tie: `semi-${n}`, leg: 0 },
+      { id: `semi-${n}-l1`, home: hi, away: lo, homeScore: 0, awayScore: 0, completed: false, tie: `semi-${n}`, leg: 1 },
+    ];
     const semis = [
-      { id: "semi-0", home: top4[0].playerIndex, away: top4[3].playerIndex, homeScore: 0, awayScore: 0, completed: false },
-      { id: "semi-1", home: top4[1].playerIndex, away: top4[2].playerIndex, homeScore: 0, awayScore: 0, completed: false },
+      ...semiLegs(0, top4[0].playerIndex, top4[3].playerIndex),
+      ...semiLegs(1, top4[1].playerIndex, top4[2].playerIndex),
     ];
     update({ phase: PHASES.KNOCKOUT, semiFinals: semis, finalMatch: null, champion: null });
   };
@@ -725,6 +804,18 @@ export default function FifaApp({ code, onLeave }) {
       setTimeout(() => setCopied(false), 1400);
     });
   };
+
+  // Two-legged scoring context for the Scorer. A leg whose sibling is already
+  // played is the decider — pass that sibling so the Scorer can block a level
+  // aggregate. A leg that's part of a tie never blocks plain draws.
+  const openTieSibling =
+    openMatch?.tie != null
+      ? allMatches.find((x) => x.tie === openMatch.tie && x.id !== openMatch.id)
+      : null;
+  const scorerFirstLeg = openTieSibling?.completed ? openTieSibling : null;
+  const scorerNoDraws = openMatch
+    ? !openMatch.id.startsWith("group") && openMatch.tie == null
+    : false;
 
   // Multi-group view lays itself out full-width (two-column groups inside),
   // so it doesn't want main's 1fr+360px aside split.
@@ -792,7 +883,14 @@ export default function FifaApp({ code, onLeave }) {
       )}
 
       {ready && (phase === PHASES.GROUP || phase === PHASES.KNOCKOUT) && (
-        <BettingBar code={code} sw={swStatus} currency={betting.currency || "INR"} onSetCurrency={setBetCurrency} />
+        <BettingBar
+          code={code}
+          sw={swStatus}
+          currency={betting.currency || "INR"}
+          onSetCurrency={setBetCurrency}
+          ledger={betLedger}
+          onOpenMatch={openBetsById}
+        />
       )}
 
       <main className={useAside && ready ? "with-aside" : ""}>
@@ -897,7 +995,9 @@ export default function FifaApp({ code, onLeave }) {
           teamsByName={teamsByName}
           onSubmit={handleScoreSubmit}
           onClose={() => setOpenMatch(null)}
-          noDraws={!openMatch.id.startsWith("group")}
+          noDraws={scorerNoDraws}
+          firstLeg={scorerFirstLeg}
+          legNo={openMatch.leg != null ? openMatch.leg + 1 : null}
         />
       )}
 
@@ -910,6 +1010,7 @@ export default function FifaApp({ code, onLeave }) {
           members={swStatus.members || []}
           currency={betting.currency || "INR"}
           onPlaceBet={placeBet}
+          onRemoveBet={removeBet}
           onAddMarket={addCustomMarket}
           onKickOff={kickOff}
           onSettle={settleMarket}

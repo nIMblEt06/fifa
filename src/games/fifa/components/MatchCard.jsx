@@ -26,7 +26,7 @@ function Slot({ player, teamsByName, side }) {
 
 const CUR_SYM = { INR: "₹", USD: "$", EUR: "€", GBP: "£" };
 
-export default function MatchCard({ match, players, teamsByName, onOpen, isLive, isNext, betting }) {
+export default function MatchCard({ match, players, teamsByName, onOpen, isLive, isNext, betting, legLabel }) {
   const home = match.home != null ? players[match.home] : null;
   const away = match.away != null ? players[match.away] : null;
   const isBye = match.bye;
@@ -74,6 +74,7 @@ export default function MatchCard({ match, players, teamsByName, onOpen, isLive,
       tabIndex={playable ? 0 : -1}
       onKeyDown={(e) => playable && (e.key === "Enter" || e.key === " ") && onOpen(match)}
     >
+      {legLabel && <span className="match-leg-tag">{legLabel}</span>}
       <Slot player={home} teamsByName={teamsByName} side="home" />
       {isBye ? (
         <div className="score-block bye-tag">BYE</div>

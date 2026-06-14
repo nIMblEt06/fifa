@@ -34,7 +34,7 @@ function Wheel({ value, onChange }) {
   );
 }
 
-export default function Scorer({ match, players, teamsByName, onSubmit, onClose, noDraws }) {
+export default function Scorer({ match, players, teamsByName, onSubmit, onClose, noDraws, firstLeg, legNo }) {
   const home = players[match.home];
   const away = players[match.away];
   const homeBadge = teamsByName?.get(home.team)?.badge;
@@ -42,7 +42,14 @@ export default function Scorer({ match, players, teamsByName, onSubmit, onClose,
   const [h, setH] = useState(match.completed ? match.homeScore : 0);
   const [a, setA] = useState(match.completed ? match.awayScore : 0);
 
-  const drawBlocked = noDraws && h === a;
+  // Two-legged tie: `firstLeg` is the already-played sibling (home/away swapped,
+  // so its away maps to this match's home). The aggregate must not be level —
+  // there are no draws over two legs, so the deciding scoreline has to separate
+  // them. The first leg (no completed sibling) may end in any score.
+  const aggHome = firstLeg ? h + firstLeg.awayScore : null;
+  const aggAway = firstLeg ? a + firstLeg.homeScore : null;
+  const aggLevel = firstLeg ? aggHome === aggAway : false;
+  const drawBlocked = aggLevel || (!firstLeg && noDraws && h === a);
 
   // Esc closes
   useEffect(() => {
@@ -68,8 +75,13 @@ export default function Scorer({ match, players, teamsByName, onSubmit, onClose,
     <div className="scorer-overlay" role="dialog" aria-modal="true">
       <button className="scorer-close" onClick={onClose} aria-label="Close">✕</button>
       <div className="scorer-header">
-        {match.id.startsWith("group") ? "Group Match" : "Knockout Match"}
-        {drawBlocked && " · Knockout — no draws"}
+        {match.id.startsWith("group")
+          ? "Group Match"
+          : legNo
+            ? `Knockout · Leg ${legNo}`
+            : "Knockout Match"}
+        {firstLeg && ` · Agg ${aggHome}–${aggAway}`}
+        {drawBlocked && (aggLevel ? " · Aggregate level — need a winner" : " · Knockout — no draws")}
       </div>
 
       <div className="scorer-stage">

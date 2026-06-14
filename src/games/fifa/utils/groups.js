@@ -308,7 +308,9 @@ export function buildKnockout(qualifierSeeds, groupOf = null) {
     }
   }
 
-  const matches = pairs.map((p, i) => makeKnockoutMatch(size, 0, i, p[0], p[1]));
+  // Every round except a two-team final is played over two legs (home & away).
+  const twoLegged = size !== 2;
+  const matches = pairs.flatMap((p, i) => makeTie(size, 0, i, p[0], p[1], twoLegged));
   return { rounds: [{ name: roundName(size), matches }] };
 }
 
@@ -326,58 +328,124 @@ export function makeKnockoutMatch(bracketSize, roundIdx, matchIdx, home, away) {
   };
 }
 
+/**
+ * Build a knockout tie as an array of leg match objects. A two-legged tie is two
+ * matches with home/away swapped between legs (ids `<base>-l0` / `-l1`, linked by
+ * a shared `tie` id); aggregate over both legs decides who advances (tieWinner).
+ * A single-legged tie (the final) or a bye is just one match — so existing
+ * single-match brackets and byes flow through unchanged.
+ */
+export function makeTie(bracketSize, roundIdx, matchIdx, home, away, twoLegged) {
+  const single = makeKnockoutMatch(bracketSize, roundIdx, matchIdx, home, away);
+  if (!twoLegged || single.bye) return [single];
+  const tie = single.id; // the deterministic match id doubles as the tie id
+  return [
+    { ...single, id: `${tie}-l0`, tie, leg: 0 },
+    { id: `${tie}-l1`, home: away, away: home, homeScore: 0, awayScore: 0, completed: false, bye: false, tie, leg: 1 },
+  ];
+}
+
 /** Winner player index of a completed match (null if not resolvable). */
 export function matchWinner(m) {
   if (!m || !m.completed) return null;
   if (m.bye) return m.home != null ? m.home : m.away;
   if (m.homeScore > m.awayScore) return m.home;
   if (m.awayScore > m.homeScore) return m.away;
-  return null; // draw — shouldn't happen in knockout
+  return null; // draw — shouldn't happen in a single-leg knockout
 }
 
 /**
- * Given completed `rounds`, if the last round is fully complete and has more
- * than one match, build the next round from the winners and return a NEW rounds
- * array. Otherwise returns the same rounds array (possibly with a champion-less
- * single Final left to be played). Returns { rounds, champion }.
+ * Group a flat list of leg matches into ties. Legs sharing a `tie` id collapse
+ * into one two-legged tie; matches without a `tie` (the final, byes, and any
+ * legacy single-match data) become singleton single-legged ties. Order follows
+ * first appearance; each tie's legs are sorted by leg index.
+ * Returns [{ id, twoLegged, legs: [match, …] }].
+ */
+export function groupLegTies(matches) {
+  const ties = [];
+  const byId = new Map();
+  for (const m of matches || []) {
+    if (m.tie != null) {
+      let t = byId.get(m.tie);
+      if (!t) { t = { id: m.tie, legs: [], twoLegged: true }; byId.set(m.tie, t); ties.push(t); }
+      t.legs.push(m);
+    } else {
+      ties.push({ id: m.id, legs: [m], twoLegged: false });
+    }
+  }
+  for (const t of ties) t.legs.sort((a, b) => (a.leg ?? 0) - (b.leg ?? 0));
+  return ties;
+}
+
+/** Ties of a bracket round (groupLegTies over its matches). */
+export function roundTies(round) {
+  return groupLegTies(round?.matches || []);
+}
+
+/** True when every leg of the tie is complete. */
+export function tieComplete(tie) {
+  return !!tie && tie.legs.every((m) => m.completed);
+}
+
+/**
+ * Aggregate of a completed two-legged tie from each player's perspective.
+ * Player A is leg 1's home (and leg 2's away); player B the reverse.
+ * Returns { a, b, aggA, aggB, winner } (winner null if level), or null when the
+ * tie isn't a completed two-legged tie.
+ */
+export function tieAggregate(tie) {
+  if (!tie?.twoLegged || tie.legs.length < 2) return null;
+  const [l0, l1] = tie.legs;
+  if (!l0.completed || !l1.completed) return null;
+  const a = l0.home, b = l0.away;
+  const aggA = l0.homeScore + l1.awayScore; // A: home in leg 1, away in leg 2
+  const aggB = l0.awayScore + l1.homeScore; // B: away in leg 1, home in leg 2
+  return { a, b, aggA, aggB, winner: aggA > aggB ? a : aggB > aggA ? b : null };
+}
+
+/**
+ * Player index that advances from a tie: aggregate winner over two legs, or the
+ * single match's winner for a one-legged tie / bye. Null if undecided or level.
+ */
+export function tieWinner(tie) {
+  if (!tieComplete(tie)) return null;
+  if (!tie.twoLegged) return matchWinner(tie.legs[0]);
+  return tieAggregate(tie)?.winner ?? null;
+}
+
+/**
+ * Given completed `rounds`, if the last round's ties are all complete and there
+ * is more than one tie, build the next round from the tie winners and return a
+ * NEW rounds array. Otherwise returns the SAME rounds array reference (callers
+ * loop on reference equality to detect "nothing changed"), possibly with a
+ * champion-less single Final left to be played. Returns { rounds, champion }.
  */
 export function advanceKnockout(rounds) {
   if (!rounds.length) return { rounds, champion: null };
   const last = rounds[rounds.length - 1];
-  const allDone = last.matches.every((m) => m.completed);
-  if (!allDone) return { rounds, champion: null };
+  const ties = roundTies(last);
+  if (!ties.every(tieComplete)) return { rounds, champion: null };
 
-  // If the last round is the Final (single match), crown the champion.
-  if (last.matches.length === 1) {
-    return { rounds, champion: matchWinner(last.matches[0]) };
+  // A single tie left = the Final → crown its winner.
+  if (ties.length === 1) {
+    return { rounds, champion: tieWinner(ties[0]) };
   }
 
-  // Already built the next round? (idempotent guard)
-  // Build winners list and the next round.
-  const winners = last.matches.map(matchWinner);
-  const nextSlots = last.matches.length; // halves the slot count
-  const size = nextSlots; // number of teams in next round = number of prev matches
+  // Build the next round from each tie's winner. The next round is the Final
+  // (single leg) iff exactly two teams advance; every earlier round is two-legged.
+  const winners = ties.map(tieWinner);
+  const size = winners.length; // teams advancing to the next round
+  const twoLegged = size !== 2;
+  const bracketSize = bracketSizeOf(rounds);
   const nextMatches = [];
   for (let i = 0; i < winners.length; i += 2) {
-    nextMatches.push(
-      makeKnockoutMatch(
-        bracketSizeOf(rounds),
-        rounds.length,
-        i / 2,
-        winners[i],
-        winners[i + 1]
-      )
-    );
+    nextMatches.push(...makeTie(bracketSize, rounds.length, i / 2, winners[i], winners[i + 1], twoLegged));
   }
   const nextRound = { name: roundName(size), matches: nextMatches };
-  const newRounds = [...rounds, nextRound];
-
-  // If the freshly built round is the Final and it auto-resolved (can't here,
-  // no byes downstream), fall through; champion handled on next completion.
-  return { rounds: newRounds, champion: null };
+  return { rounds: [...rounds, nextRound], champion: null };
 }
 
 function bracketSizeOf(rounds) {
-  // First round match count * 2 = bracket size.
-  return rounds[0].matches.length * 2;
+  // Number of ties in the first round × 2 = bracket size.
+  return roundTies(rounds[0]).length * 2;
 }

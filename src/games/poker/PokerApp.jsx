@@ -3,6 +3,7 @@ import Reactions from "../../components/Reactions";
 import { shareUrl, clientId } from "../../utils/room";
 import { useRoom } from "../../utils/useRoom";
 import { computeNets, imbalance, isBalanced, computeSettlement, moneyPerChip } from "./money";
+import { evaluate, describeScore } from "./engine";
 import MemberCombobox from "../../components/MemberCombobox";
 
 const SUIT_GLYPH = { S: "♠", H: "♥", D: "♦", C: "♣" };
@@ -351,6 +352,16 @@ function Table({ me, view, mpc, currency, sendAction }) {
 
   const [rebuyOpen, setRebuyOpen] = useState(false);
   const [rebuyChips, setRebuyChips] = useState("");
+  const [raiseOpen, setRaiseOpen] = useState(false);
+  if (raiseOpen && !myTurn) setRaiseOpen(false);
+
+  // Best hand you can currently make with your hole cards + the board so
+  // far (only meaningful once 5+ cards are in play, i.e. from the flop on).
+  const myHandName = useMemo(() => {
+    const cards = [...(h?.yourHole || []), ...(h?.board || [])];
+    if (cards.length < 5) return null;
+    return describeScore(evaluate(cards));
+  }, [h?.yourHole, h?.board]);
 
   // Last public action for the status strip.
   const lastAction = useMemo(() => {
@@ -409,80 +420,98 @@ function Table({ me, view, mpc, currency, sendAction }) {
       )}
 
       {/* Seats */}
-      <div className="poker-table">
+      <div className="poker-seat-strip">
         {seats.map((s) => {
           const isTurn = handLive && h.toAct === s.id;
+          const initials = (s.name || "?").trim().slice(0, 2).toUpperCase();
           return (
             <div key={s.id}
-                 className={"poker-row poker-seat" +
+                 className={"poker-seat-chip" +
                    (isTurn ? " is-turn" : "") +
                    (handLive && h.folded[s.id] ? " is-folded" : "") +
                    (s.sittingOut ? " is-out" : "")}>
-              <div className="poker-row-name">
+              <span className="poker-seat-avatar">
+                {initials}
                 {t.buttonId === s.id && <span className="poker-dealer" title="Dealer button">D</span>}
-                {s.name}
-                {s.id === me && <span className="muted"> (you)</span>}
-              </div>
-              <div className="poker-row-totals">
-                <strong>{chipsFmt(s.stack)}</strong>
-                <span className="poker-row-money">{fmt(s.stack * mpc, currency)}</span>
-                <span className="muted">{s.buyInCount}×buy-in</span>
-                {s.pendingChips > 0 && <span className="poker-pending">+{chipsFmt(s.pendingChips)} next hand</span>}
-              </div>
-              <div className="poker-seat-state">
-                {handLive && (h.committed[s.id] || 0) > 0 && (
-                  <span className="poker-bet-chip">{chipsFmt(h.committed[s.id])}</span>
-                )}
-                {handLive && h.allIn[s.id] && !h.folded[s.id] && <span className="poker-badge allin">ALL-IN</span>}
-                {handLive && h.folded[s.id] && <span className="poker-badge">FOLDED</span>}
-                {s.sittingOut && <span className="poker-badge">SITTING OUT</span>}
-                {isTurn && s.id !== me && (
-                  <button className="poker-btn poker-ghostfold"
-                          title="Only works if their connection dropped"
-                          onClick={() => sendAction({ type: "pokerAction", move: owePlayer(h, s.id) > 0 ? "fold" : "check", forId: s.id })}>
-                    away? {owePlayer(h, s.id) > 0 ? "fold" : "check"} for them
-                  </button>
-                )}
-              </div>
+              </span>
+              <span className="poker-seat-name">{s.name}{s.id === me && " (you)"}</span>
+              <span className="poker-seat-stack">{chipsFmt(s.stack)}</span>
+              {handLive && (h.committed[s.id] || 0) > 0 && (
+                <span className="poker-bet-chip poker-bet-chip-sm">{chipsFmt(h.committed[s.id])}</span>
+              )}
+              {handLive && h.allIn[s.id] && !h.folded[s.id] && <span className="poker-badge allin">ALL-IN</span>}
+              {handLive && h.folded[s.id] && <span className="poker-badge">FOLDED</span>}
+              {s.sittingOut && <span className="poker-badge">OUT</span>}
+              {s.pendingChips > 0 && <span className="poker-pending">+{chipsFmt(s.pendingChips)}</span>}
+              {isTurn && s.id !== me && (
+                <button className="poker-ghostfold"
+                        title="Only works if their connection dropped"
+                        onClick={() => sendAction({ type: "pokerAction", move: owePlayer(h, s.id) > 0 ? "fold" : "check", forId: s.id })}>
+                  away?
+                </button>
+              )}
             </div>
           );
         })}
       </div>
 
-      {/* Your cards + action bar */}
+      {/* Action bar */}
+      {meSeat && h && myTurn && (
+        <div className="poker-actionbar">
+          {!raiseOpen ? (
+            <div className="poker-actionbar-main">
+              <button className="poker-btn poker-act-fold" onClick={() => act("fold")}>Fold</button>
+              {owe === 0 ? (
+                <button className="poker-btn poker-act-call" onClick={() => act("check")}>Check</button>
+              ) : (
+                <button className="poker-btn poker-act-call" onClick={() => act("call")}>
+                  Call {chipsFmt(Math.min(owe, meSeat.stack))}
+                </button>
+              )}
+              {myMax > h.currentBet && (
+                <button className="poker-btn poker-act-raise" onClick={() => act("raise", Number(raiseTo))}>
+                  {h.currentBet === 0 ? "Bet" : "Raise"} {chipsFmt(Number(raiseTo) || 0)}
+                </button>
+              )}
+              {myMax > h.currentBet && (
+                <button className="poker-btn poker-act-expand" title="Custom amount" onClick={() => setRaiseOpen(true)}>↑</button>
+              )}
+            </div>
+          ) : (
+            <div className="poker-raise-panel">
+              <div className="poker-raise-slider-row">
+                <span className="poker-raise-amount">↑ {chipsFmt(Number(raiseTo) || 0)}</span>
+                <input type="range" className="poker-raise-slider"
+                       min={h.minRaiseTo} max={myMax} value={Math.min(Number(raiseTo) || h.minRaiseTo, myMax)}
+                       onChange={(e) => setRaiseTo(e.target.value)} />
+                <button className="poker-btn poker-act-expand"
+                        onClick={() => { act("raise", Number(raiseTo)); setRaiseOpen(false); }}>↑</button>
+              </div>
+              <div className="poker-raise-quick">
+                <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(t.bb, myMax)))}>1 BB</button>
+                <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(Math.round((h.pot + h.currentBet) / 2), myMax)))}>1/2 Pot</button>
+                <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(h.pot * 2 + h.currentBet, myMax)))}>Pot</button>
+                <button className="poker-btn poker-act-expand" onClick={() => setRaiseOpen(false)}>✕</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {meSeat && h && handLive && !myTurn && h.toAct && (
+        <div className="poker-waiting muted">Waiting on {nameOf(h.toAct)}…</div>
+      )}
+
+      {/* Your cards + best hand so far */}
       {meSeat && h && (
         <div className="poker-you">
           <div className="poker-hole">
             {(h.yourHole || []).map((c) => <PlayingCard key={c} card={c} big />)}
             {!h.yourHole && <span className="muted">not dealt in</span>}
           </div>
-
-          {myTurn && (
-            <div className="poker-actionbar">
-              <button className="poker-btn poker-act-fold" onClick={() => act("fold")}>FOLD</button>
-              {owe === 0 ? (
-                <button className="poker-btn poker-act-check" onClick={() => act("check")}>CHECK</button>
-              ) : (
-                <button className="poker-btn poker-act-call" onClick={() => act("call")}>
-                  CALL {chipsFmt(Math.min(owe, meSeat.stack))}
-                </button>
-              )}
-              {myMax > h.currentBet && (
-                <span className="poker-raise">
-                  <input type="number" min={h.minRaiseTo} max={myMax} value={raiseTo}
-                         onChange={(e) => setRaiseTo(e.target.value)} />
-                  <button className="poker-btn poker-act-raise" onClick={() => act("raise", Number(raiseTo))}>
-                    {h.currentBet === 0 ? "BET" : "RAISE TO"} {chipsFmt(Number(raiseTo) || 0)}
-                  </button>
-                  <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(h.minRaiseTo, myMax)))}>min</button>
-                  <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(h.pot * 2 + h.currentBet, myMax)))}>pot</button>
-                  <button className="poker-btn" onClick={() => setRaiseTo(String(myMax))}>all-in</button>
-                </span>
-              )}
+          {myHandName && (
+            <div className="poker-handbox">
+              <span className="poker-handbox-label">{myHandName}</span>
             </div>
-          )}
-          {handLive && !myTurn && h.toAct && (
-            <div className="poker-waiting muted">Waiting on {nameOf(h.toAct)}…</div>
           )}
         </div>
       )}

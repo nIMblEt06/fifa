@@ -2134,66 +2134,7 @@ tbody tr.qualified td:nth-child(1) {
 
 /* ── Session / cashout rows ─────────────────────────────────── */
 
-.poker-table {
-  border: 1px solid var(--paper);
-  margin-bottom: 1.5rem;
-}
-
-.poker-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0.6rem;
-  padding: 0.9rem 1rem;
-  border-bottom: 1px solid var(--dim);
-}
-.poker-row:last-child { border-bottom: 0; }
-
-@media (min-width: 720px) {
-  .poker-row {
-    grid-template-columns: 9rem minmax(0, 1fr) auto;
-    align-items: center;
-  }
-}
-
-.poker-row-name {
-  font-family: var(--mono);
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--paper);
-}
-
-.poker-row-totals {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5rem 0.9rem;
-  font-family: var(--mono);
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--mute);
-}
-.poker-row-totals strong { color: var(--paper); font-size: 0.95rem; }
 .poker-row-money { color: var(--hot); font-weight: 700; }
-
-.poker-row-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.poker-row-actions input {
-  width: 6.5rem;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid var(--paper);
-  background: var(--ink);
-  color: var(--paper);
-  font-family: var(--mono);
-  font-size: 0.9rem;
-}
-.poker-row-actions input:focus { outline: none; border-color: var(--hot); }
 
 .poker-btn {
   padding: 0.5rem 0.8rem;
@@ -2826,24 +2767,23 @@ tbody tr.qualified td:nth-child(1) {
 }
 .poker-minicard.red { color: #c0182f; }
 
-.poker-seat.is-turn { background: rgba(255, 31, 122, 0.08); box-shadow: inset 3px 0 0 var(--hot); }
-.poker-seat.is-folded { opacity: 0.45; }
-.poker-seat.is-out { opacity: 0.35; }
 .poker-dealer {
+  position: absolute;
+  bottom: -0.3rem;
+  right: -0.3rem;
   display: inline-flex;
-  width: 1.15rem;
-  height: 1.15rem;
+  width: 1.1rem;
+  height: 1.1rem;
   align-items: center;
   justify-content: center;
-  margin-right: 0.45rem;
   border-radius: 50%;
   background: var(--paper);
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   font-weight: 800;
+  border: 2px solid var(--ink);
 }
-.poker-seat-state { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .poker-bet-chip {
   padding: 0.15rem 0.5rem;
   border: 1px solid var(--warn);
@@ -2853,22 +2793,83 @@ tbody tr.qualified td:nth-child(1) {
 }
 .poker-badge {
   font-family: var(--mono);
-  font-size: 0.65rem;
-  letter-spacing: 0.1em;
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
   color: var(--mute);
   border: 1px solid var(--dim);
-  padding: 0.12rem 0.4rem;
+  padding: 0.08rem 0.35rem;
 }
 .poker-badge.allin { color: var(--shame); border-color: var(--shame); }
-.poker-pending { color: var(--live); font-family: var(--mono); font-size: 0.72rem; }
-.poker-ghostfold { font-size: 0.65rem; padding: 0.15rem 0.45rem; opacity: 0.75; }
+.poker-pending { color: var(--live); font-family: var(--mono); font-size: 0.62rem; }
+.poker-ghostfold {
+  background: none;
+  border: 0;
+  color: var(--hot);
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Seat strip — one avatar chip per player, wraps into rows so every seat
+   (and whose turn it is) is visible at a glance, no scrolling required. */
+.poker-seat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.9rem 0.7rem;
+  padding: 0.2rem 0.1rem 0.75rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--dim);
+}
+.poker-seat-chip {
+  flex: 0 0 auto;
+  width: 4rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  text-align: center;
+}
+.poker-seat-chip.is-folded { opacity: 0.4; }
+.poker-seat-chip.is-out { opacity: 0.35; }
+.poker-seat-avatar {
+  position: relative;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 50%;
+  border: 2px solid var(--rule);
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-weight: 800;
+  font-size: 0.8rem;
+  color: var(--paper);
+}
+.poker-seat-chip.is-turn .poker-seat-avatar {
+  border-color: var(--hot);
+  box-shadow: 0 0 0 3px rgba(255, 31, 122, 0.28);
+}
+.poker-seat-name {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--paper);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.poker-seat-stack { font-family: var(--mono); font-weight: 700; font-size: 0.78rem; color: var(--paper); }
+.poker-bet-chip-sm { padding: 0.05rem 0.35rem; font-size: 0.68rem; }
 
 .poker-you {
   margin-top: 1rem;
-  border: 2px solid var(--rule);
-  padding: 0.85rem;
   display: flex;
-  flex-direction: column;
   gap: 0.75rem;
   align-items: center;
 }
@@ -2876,23 +2877,57 @@ tbody tr.qualified td:nth-child(1) {
 .pcard-big { width: 74px; height: 104px; }
 .pcard-big .pcard-center { font-size: 30px; }
 
-.poker-actionbar { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; align-items: center; }
-.poker-actionbar .poker-btn { font-size: 0.9rem; padding: 0.5rem 0.9rem; }
-.poker-act-fold:hover { background: var(--shame); border-color: var(--shame); color: var(--paper); }
-.poker-act-call, .poker-act-check { border-color: var(--live); color: var(--live); }
-.poker-act-call:hover, .poker-act-check:hover { background: var(--live); color: var(--ink); border-color: var(--live); }
-.poker-act-raise { border-color: var(--hot); color: var(--hot); }
-.poker-raise { display: inline-flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
-.poker-raise input {
-  width: 6.5rem;
-  background: var(--ink);
-  border: 1px solid var(--dim);
-  color: var(--paper);
-  font-family: var(--mono);
-  padding: 0.45rem 0.5rem;
+.poker-handbox {
+  border: 2px solid var(--rule);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0.7rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 104px;
+  flex: 1;
 }
-.poker-raise input:focus { outline: none; border-color: var(--hot); }
-.poker-waiting { font-family: var(--mono); font-size: 0.8rem; }
+.poker-handbox-label {
+  font-family: var(--mono);
+  font-weight: 800;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--mute);
+  text-align: center;
+}
+
+/* Action bar — same square poker-btn language as the rest of the app
+   (thin border, mono caps, solid-fill on hover), just laid out as a row
+   of Fold / Call / Raise with a caret that expands a sizing panel. */
+.poker-actionbar { margin-top: 0.75rem; }
+.poker-actionbar-main { display: flex; gap: 0.5rem; align-items: stretch; }
+.poker-actionbar-main .poker-btn { flex: 1; text-align: center; font-size: 0.85rem; padding: 0.75rem 0.6rem; }
+.poker-act-fold { border-color: var(--shame); color: var(--shame); }
+.poker-act-fold:hover { background: var(--shame); color: var(--paper); border-color: var(--shame); }
+.poker-act-call { border-color: var(--live); color: var(--live); }
+.poker-act-call:hover { background: var(--live); color: var(--ink); border-color: var(--live); }
+.poker-act-raise { border-color: var(--hot); color: var(--hot); }
+.poker-act-raise:hover { background: var(--hot); color: var(--hot-ink); border-color: var(--hot); }
+.poker-act-expand { flex: 0 0 auto; width: 2.8rem; padding: 0; font-size: 1.1rem; }
+
+.poker-raise-panel { display: flex; flex-direction: column; gap: 0.6rem; }
+.poker-raise-slider-row { display: flex; gap: 0.75rem; align-items: center; }
+.poker-raise-amount {
+  font-family: var(--mono);
+  font-weight: 800;
+  font-size: 0.95rem;
+  color: var(--hot);
+  white-space: nowrap;
+}
+.poker-raise-slider {
+  flex: 1;
+  accent-color: var(--hot);
+}
+.poker-raise-quick { display: flex; gap: 0.5rem; }
+.poker-raise-quick .poker-btn { flex: 1; padding: 0.55rem 0.5rem; font-size: 0.72rem; text-align: center; }
+.poker-raise-quick .poker-act-expand { flex: 0 0 auto; }
+.poker-waiting { font-family: var(--mono); font-size: 0.8rem; margin-top: 0.5rem; }
 
 .poker-rebuy {
   margin-top: 0.75rem;

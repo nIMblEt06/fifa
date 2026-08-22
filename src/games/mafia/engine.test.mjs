@@ -11,10 +11,10 @@ import {
   castDetectiveCheck,
   nightActionsComplete,
   resolveNight,
-  openVote,
   castDayVote,
   dayVoteComplete,
   resolveDayVote,
+  resetToLobby,
   ROLE,
   PHASE,
   SKIP,
@@ -95,7 +95,7 @@ test("night: strict mafia majority kills, minority split is a tie with no kill",
   const beforeAlive = alive(state).length;
   const resolved = resolveNight(state).state;
   assert.equal(alive(resolved).length, beforeAlive, "tie kills no one");
-  assert.equal(resolved.phase, PHASE.DAY_DISCUSS);
+  assert.equal(resolved.phase, PHASE.DAY);
 });
 
 test("night: 3-of-4 mafia agreeing already crosses majority, short-circuits the 4th vote", () => {
@@ -127,7 +127,7 @@ test("night: doctor save cancels the kill", () => {
   const resolved = resolveNight(state).state;
   const seat = resolved.players.find((p) => p.id === target.id);
   assert.equal(seat.alive, true);
-  assert.equal(resolved.phase, PHASE.DAY_DISCUSS);
+  assert.equal(resolved.phase, PHASE.DAY);
 });
 
 test("night: detective learns mafia status privately", () => {
@@ -145,7 +145,6 @@ test("day vote: majority lynches, role revealed", () => {
   let { state } = startGame(s0, rngFrom(5));
   // Skip straight to day by resolving an empty night.
   state = resolveNight(state).state;
-  state = openVote(state).state;
 
   const target = alive(state)[0];
   const voters = alive(state).map((p) => p.id);
@@ -163,7 +162,6 @@ test("day vote: tie triggers exactly one revote, second tie is final (no elimina
   const s0 = lobbyOf(4, { mafiaCount: 1, doctorEnabled: false, detectiveEnabled: false });
   let { state } = startGame(s0, rngFrom(6));
   state = resolveNight(state).state;
-  state = openVote(state).state;
 
   const ids = alive(state).map((p) => p.id);
   // 2-2 tie between the first two candidates.
@@ -173,7 +171,7 @@ test("day vote: tie triggers exactly one revote, second tie is final (no elimina
   state = castDayVote(state, ids[3], ids[3]).state;
   assert.equal(dayVoteComplete(state), true);
   let resolved = resolveDayVote(state).state;
-  assert.equal(resolved.phase, PHASE.DAY_VOTE, "still voting — revote in progress");
+  assert.equal(resolved.phase, PHASE.DAY, "still voting — revote in progress");
   assert.deepEqual(new Set(resolved.day.voteCandidates), new Set([ids[2], ids[3]]));
 
   // Revote ties again → final, no elimination.
@@ -194,7 +192,6 @@ test("win check: all mafia dead → town wins", () => {
   const others = state.players.filter((p) => p.id !== mafia.id).map((p) => p.id);
 
   state = resolveNight(state).state; // no kill
-  state = openVote(state).state;
   for (const v of others) state = castDayVote(state, v, mafia.id).state;
   state = castDayVote(state, mafia.id, others[0]).state;
   const resolved = resolveDayVote(state).state;
@@ -215,13 +212,32 @@ test("win check: mafia parity with town → mafia wins", () => {
     s = castMafiaVote(s, mafia.id, alive0[0].id).state;
     s = resolveNight(s).state;
     if (s.winner) break;
-    s = openVote(s).state;
     // no lynch — everyone skips.
     for (const v of alive(s)) s = castDayVote(s, v.id, SKIP).state;
     s = resolveDayVote(s).state;
     if (s.winner) break;
   }
   assert.equal(s.winner, "mafia");
+});
+
+test("startGame is deterministic for the same lobby: racing clients with no explicit rng converge", () => {
+  const s0 = lobbyOf(8, { mafiaCount: 2, doctorEnabled: true, detectiveEnabled: true });
+  const a = startGame(s0).state; // no rng passed — two "clients" computing from the same s0
+  const b = startGame(s0).state;
+  assert.deepEqual(a.players.map((p) => p.role), b.players.map((p) => p.role));
+});
+
+test("resetToLobby bumps gamesPlayed so a same-players replay reshuffles roles", () => {
+  const s0 = lobbyOf(8, { mafiaCount: 2, doctorEnabled: true, detectiveEnabled: true });
+  const first = startGame(s0).state;
+  const backToLobby = resetToLobby(first).state;
+  assert.equal(backToLobby.gamesPlayed, 1);
+  const second = startGame(backToLobby).state;
+  assert.notDeepEqual(
+    first.players.map((p) => p.role),
+    second.players.map((p) => p.role),
+    "replaying with identical players/settings should not reproduce the exact same role assignment"
+  );
 });
 
 console.log(`\n${passed} passed`);

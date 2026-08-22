@@ -14,7 +14,6 @@ import {
   nightActionsComplete,
   resolveNight,
   postDayChat,
-  openVote,
   castDayVote,
   dayVoteComplete,
   resolveDayVote,
@@ -85,9 +84,7 @@ export default function MafiaApp({ code, onLeave }) {
       const expired = s.phaseEndsAt != null && now >= s.phaseEndsAt;
       if (s.phase === PHASE.NIGHT) {
         if (nightActionsComplete(s) || expired) apply(resolveNight(s));
-      } else if (s.phase === PHASE.DAY_DISCUSS) {
-        if (expired) apply(openVote(s));
-      } else if (s.phase === PHASE.DAY_VOTE) {
+      } else if (s.phase === PHASE.DAY) {
         if (dayVoteComplete(s) || expired) apply(resolveDayVote(s));
       }
     }, 500);
@@ -265,8 +262,11 @@ function Lobby({ name, setName, onJoin, joined, state, me, onSetConfig, onStart 
               <div className="uc-roles-title" style={{ marginTop: 14 }}>TIMERS</div>
               <div className="uc-role-grid">
                 <TimerStepper label="NIGHT" seconds={config.nightSeconds} onBump={(d) => bumpSeconds("nightSeconds", d)} />
-                <TimerStepper label="DAY DISCUSS" seconds={config.dayDiscussSeconds} onBump={(d) => bumpSeconds("dayDiscussSeconds", d)} />
-                <TimerStepper label="DAY VOTE" seconds={config.dayVoteSeconds} onBump={(d) => bumpSeconds("dayVoteSeconds", d)} />
+                <TimerStepper label="DAY" seconds={config.daySeconds} onBump={(d) => bumpSeconds("daySeconds", d)} />
+                <TimerStepper label="TIE REVOTE" seconds={config.revoteSeconds} onBump={(d) => bumpSeconds("revoteSeconds", d)} />
+              </div>
+              <div className="muted small">
+                Day ends the moment everyone's voted, or when the day timer runs out — whichever comes first.
               </div>
 
               {err && <div className="muted small">{err}</div>}
@@ -333,7 +333,7 @@ function Game({ state, me, onMafiaChat, onMafiaVote, onDoctorSave, onDetectiveCh
         />
       )}
 
-      {(state.phase === PHASE.DAY_DISCUSS || state.phase === PHASE.DAY_VOTE) && (
+      {state.phase === PHASE.DAY && (
         <DayPanel state={state} you={you} onDayChat={onDayChat} onDayVote={onDayVote} />
       )}
 
@@ -358,8 +358,7 @@ function RoleReveal({ you, onAck }) {
 function PhaseBanner({ state, remaining }) {
   const label =
     state.phase === PHASE.NIGHT ? "NIGHT FALLS"
-    : state.phase === PHASE.DAY_DISCUSS ? "DAY · DISCUSSION"
-    : state.phase === PHASE.DAY_VOTE ? "DAY · VOTE"
+    : state.phase === PHASE.DAY ? "DAY"
     : "";
   return (
     <div className="mf-phase-banner">
@@ -559,9 +558,7 @@ function DayPanel({ state, you, onDayChat, onDayVote }) {
 
   return (
     <div className="uc-panel">
-      {state.phase === PHASE.DAY_VOTE && (
-        <DayVote state={state} you={you} onDayVote={onDayVote} />
-      )}
+      <DayVote state={state} you={you} onDayVote={onDayVote} />
 
       <div className="mf-chat">
         <div className="mf-chat-list">

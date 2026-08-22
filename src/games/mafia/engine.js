@@ -24,17 +24,21 @@
 //   • VILLAGER — everyone else.
 //
 // ── FLOW ─────────────────────────────────────────────────────────────────
-//   lobby → night → day_discuss → day_vote → (night | over) → …
+//   lobby → night → day → (night | over) → …
 //
 //   NIGHT ends the instant every alive actionable player (mafia collectively,
 //   the doctor, the detective) has acted, or the timer expires — whichever
 //   first. There is no host confirmation: elimination + role reveal + win
 //   check apply automatically.
 //
-//   DAY_VOTE: every alive player votes for an alive player or "skip" (no
-//   lynch). A tie among the top vote-getters (skip counts as a candidate)
-//   triggers exactly ONE revote restricted to the tied options; whatever
-//   that revote produces — even another tie — is final. No further loops.
+//   DAY: chat and voting are both open from the moment day starts — there's
+//   no separate discuss-then-vote split. Every alive player votes for an
+//   alive player or "skip" (no lynch) whenever they're ready; the day ends
+//   the instant every alive player has voted, or the day timer expires —
+//   same "whichever first" rule as night. A tie among the top vote-getters
+//   (skip counts as a candidate) triggers exactly ONE revote restricted to
+//   the tied options (its own short timer); whatever that revote produces —
+//   even another tie — is final. No further loops.
 //
 // ── WIN CHECK (after every resolved elimination) ────────────────────────
 //   • No mafia alive → TOWN wins.
@@ -50,8 +54,7 @@ export const ROLE = {
 export const PHASE = {
   LOBBY: "lobby",
   NIGHT: "night",
-  DAY_DISCUSS: "day_discuss",
-  DAY_VOTE: "day_vote",
+  DAY: "day",
   OVER: "over",
 };
 
@@ -65,8 +68,8 @@ export const DEFAULT_CONFIG = {
   doctorEnabled: true,
   detectiveEnabled: true,
   nightSeconds: 300, // 5:00
-  dayDiscussSeconds: 600, // 10:00
-  dayVoteSeconds: 60,
+  daySeconds: 600, // 10:00 — cap on the whole day (chat + vote); ends early once everyone's voted
+  revoteSeconds: 60, // window for the single restricted tie-revote
 };
 
 export function shuffle(arr, rng = Math.random) {
@@ -76,6 +79,43 @@ export function shuffle(arr, rng = Math.random) {
     [out[i], out[j]] = [out[j], out[i]];
   }
   return out;
+}
+
+// mulberry32 — deterministic PRNG from a 32-bit seed.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function fnv1a(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+// Because this room is client-authoritative and there's no host, more than
+// one player can tap "Start" on the same pre-start lobby at nearly the same
+// moment — each computing startGame() independently on their own client.
+// If the shuffle used Math.random(), those two calls would produce DIFFERENT
+// role assignments for the same player list; whichever POST reaches the
+// Durable Object last wins the broadcast, silently swapping out a role a
+// player already saw on their reveal card. Seeding the shuffle from the
+// lobby's own contents (join order + config + gamesPlayed) makes every such
+// racing call converge on the IDENTICAL result, so it no longer matters who
+// "wins" — while gamesPlayed (bumped on every reset) still guarantees a
+// "Play Again" with the same players and settings gets a fresh shuffle
+// instead of reproducing the exact same roles.
+function seedFromLobby(order, config, gamesPlayed) {
+  return fnv1a(order.join(",") + "|" + JSON.stringify(config) + "|" + gamesPlayed);
 }
 
 export function defaultMafiaCount(n) {
@@ -104,6 +144,7 @@ export function createInitialState() {
     players: [], // { id, name, role, alive }
     order: [], // join order (ids)
     config: { ...DEFAULT_CONFIG },
+    gamesPlayed: 0,
     round: 0,
     phaseEndsAt: null,
     night: emptyNight(),
@@ -167,11 +208,15 @@ export function setConfig(state, patch) {
   return { state: next };
 }
 
-export function startGame(state, rng = Math.random) {
+export function startGame(state, rng = null) {
   if (state.phase !== PHASE.LOBBY) return { error: "Already started" };
   const n = state.players.length;
   const err = validateConfig(n, state.config);
   if (err) return { error: err };
+
+  // Deterministic by default (see seedFromLobby above) — only tests pass an
+  // explicit rng to force a particular shuffle.
+  const effectiveRng = rng || mulberry32(seedFromLobby(state.order, state.config, state.gamesPlayed));
 
   const { mafiaCount, doctorEnabled, detectiveEnabled } = state.config;
   const villagers = n - mafiaCount - (doctorEnabled ? 1 : 0) - (detectiveEnabled ? 1 : 0);
@@ -181,7 +226,7 @@ export function startGame(state, rng = Math.random) {
     ...(detectiveEnabled ? [ROLE.DETECTIVE] : []),
     ...Array(villagers).fill(ROLE.VILLAGER),
   ];
-  const roleOrder = shuffle(bag, rng);
+  const roleOrder = shuffle(bag, effectiveRng);
 
   const next = clone(state);
   next.players = next.order.map((id, i) => {
@@ -317,17 +362,17 @@ export function resolveNight(state) {
 }
 
 function advanceToDay(state) {
-  state.phase = PHASE.DAY_DISCUSS;
-  state.phaseEndsAt = Date.now() + state.config.dayDiscussSeconds * 1000;
+  state.phase = PHASE.DAY;
+  state.phaseEndsAt = Date.now() + state.config.daySeconds * 1000;
   state.day = emptyDay();
   return state;
 }
 
 // ── DAY ──────────────────────────────────────────────────────────────────
+// Chat and voting are both open the whole time day is active — there's no
+// separate "discussion" sub-phase to wait out before voting is allowed.
 export function postDayChat(state, playerId, text) {
-  if (state.phase !== PHASE.DAY_DISCUSS && state.phase !== PHASE.DAY_VOTE) {
-    return { error: "Not day" };
-  }
+  if (state.phase !== PHASE.DAY) return { error: "Not day" };
   const seat = seatById(state, playerId);
   if (!seat || !seat.alive) return { error: "Only alive players can talk" };
   const t = String(text || "").trim();
@@ -337,17 +382,8 @@ export function postDayChat(state, playerId, text) {
   return { state: next };
 }
 
-export function openVote(state) {
-  if (state.phase !== PHASE.DAY_DISCUSS) return { error: "Not discussion" };
-  const next = clone(state);
-  next.phase = PHASE.DAY_VOTE;
-  next.phaseEndsAt = Date.now() + next.config.dayVoteSeconds * 1000;
-  next.log.push({ t: Date.now(), kind: "vote_open", round: next.round });
-  return { state: next };
-}
-
 export function castDayVote(state, voterId, targetId) {
-  if (state.phase !== PHASE.DAY_VOTE) return { error: "Not voting" };
+  if (state.phase !== PHASE.DAY) return { error: "Not day" };
   const seat = seatById(state, voterId);
   if (!seat || !seat.alive) return { error: "Only alive players can vote" };
   const eligible = state.day.voteCandidates || [...alivePlayers(state).map((p) => p.id), SKIP];
@@ -359,13 +395,13 @@ export function castDayVote(state, voterId, targetId) {
 }
 
 export function dayVoteComplete(state) {
-  if (state.phase !== PHASE.DAY_VOTE) return false;
+  if (state.phase !== PHASE.DAY) return false;
   const alive = alivePlayers(state).map((p) => p.id);
   return alive.every((id) => state.day.votes[id] !== undefined);
 }
 
 export function resolveDayVote(state) {
-  if (state.phase !== PHASE.DAY_VOTE) return { error: "Not voting" };
+  if (state.phase !== PHASE.DAY) return { error: "Not day" };
   const next = clone(state);
   const counts = new Map();
   for (const target of Object.values(next.day.votes)) {
@@ -390,7 +426,7 @@ export function resolveDayVote(state) {
     next.day.voteCandidates = topped;
     next.day.votes = {};
     next.day.tieRevoted = true;
-    next.phaseEndsAt = Date.now() + next.config.dayVoteSeconds * 1000;
+    next.phaseEndsAt = Date.now() + next.config.revoteSeconds * 1000;
     next.log.push({ t: Date.now(), kind: "day_tie_revote", round: next.round, candidates: topped });
     return { state: next };
   }
@@ -442,5 +478,8 @@ export function resetToLobby(state) {
   next.players = state.players.map((p) => ({ id: p.id, name: p.name, role: null, alive: true }));
   next.order = state.order.slice();
   next.config = { ...state.config };
+  // Bump so a same-players/same-settings replay still reshuffles roles
+  // (see seedFromLobby) instead of reproducing the exact prior assignment.
+  next.gamesPlayed = (state.gamesPlayed || 0) + 1;
   return { state: next };
 }

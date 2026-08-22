@@ -3957,3 +3957,49 @@ button.sh-policy:hover { outline: 3px solid var(--paper); }
   padding: 0.9rem; cursor: pointer;
 }
 .bm-kickoff:active { background: var(--paper); }
+
+/* ── MAFIA ──────────────────────────────────────────────────── */
+
+.mf-toggle {
+  background: var(--dim); color: var(--paper); border: 1px solid var(--rule);
+  font-family: var(--display); font-size: 0.9rem; letter-spacing: 0.05em;
+  padding: 8px 16px; cursor: pointer; min-width: 64px;
+}
+.mf-toggle.on { background: var(--live); color: var(--ink); border-color: var(--live); }
+
+.mf-reveal {
+  display: flex; flex-direction: column; align-items: center; gap: 20px;
+  padding: 40px 16px; text-align: center;
+}
+.mf-role-card {
+  width: 100%; max-width: 360px; border: 2px solid var(--rule); background: var(--dim);
+  padding: 32px 20px; display: flex; flex-direction: column; gap: 10px; align-items: center;
+}
+.mf-role-label { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.12em; opacity: 0.6; }
+.mf-role-name { font-family: var(--display); font-size: 2.4rem; letter-spacing: 0.03em; }
+.mf-role-blurb { font-size: 0.9rem; opacity: 0.8; max-width: 280px; }
+.mf-role-card.mf-role-mafia { border-color: var(--shame); }
+.mf-role-card.mf-role-mafia .mf-role-name { color: var(--shame); }
+.mf-role-card.mf-role-doctor { border-color: var(--live); }
+.mf-role-card.mf-role-doctor .mf-role-name { color: var(--live); }
+.mf-role-card.mf-role-detective { border-color: var(--warn); }
+.mf-role-card.mf-role-detective .mf-role-name { color: var(--warn); }
+
+.mf-phase-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  border: 1px solid var(--dim); padding: 10px 14px;
+  position: sticky; top: 0; background: var(--ink); z-index: 5;
+}
+.mf-phase-label { font-family: var(--display); font-size: 0.95rem; letter-spacing: 0.04em; }
+.mf-countdown { font-family: var(--mono); font-size: 1.1rem; color: var(--hot); }
+
+.mf-chat { margin-top: 14px; border-top: 1px solid var(--dim); padding-top: 10px; }
+.mf-chat-list { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.mf-chat-row { font-size: 0.85rem; display: flex; gap: 6px; }
+.mf-chat-who { font-weight: 700; opacity: 0.75; white-space: nowrap; }
+.mf-chat-text { opacity: 0.95; }
+
+.uc-role-pill.uc-role-mafia { background: var(--shame); color: var(--paper); }
+.uc-role-pill.uc-role-doctor { background: var(--live); color: var(--ink); }
+.uc-role-pill.uc-role-detective { background: var(--warn); color: var(--ink); }
+.uc-role-pill.uc-role-villager { background: var(--bone); color: var(--ink); }

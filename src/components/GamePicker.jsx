@@ -53,6 +53,12 @@ export default function GamePicker({ onPick, onOpenHof }) {
       tagline: "FOOTBALL",
       blurb: "Four goals, two balls, teams of two. Concede 5 and your goal seals shut. Last side standing.",
     },
+    {
+      id: "mafia",
+      title: "MAFIA",
+      tagline: "NIGHT FALLS",
+      blurb: "Mafia, doctor, detective vs. the town. Night consensus kills, day votes lynch. No host — the engine runs it.",
+    },
   ];
 
   // Custom-named rooms are a power-user thing (recurring event rooms like

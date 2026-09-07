@@ -72,6 +72,42 @@ npm run dev
 
 Opens at `http://localhost:5173/`. The Cloudflare Vite plugin runs the real Worker + Durable Object locally, with state persisted in `.wrangler/state/`. Open two tabs to the same room URL to see sync working.
 
+## Know Your Song (Spotify setup)
+
+`#/song` is the one game that needs external config: it plays 0.1s-to-15s clips
+from the signed-in player's own Spotify Liked Songs, so it needs a Spotify app.
+It is also the one game with no room code — the answer space is one person's
+library, so it is solo by nature.
+
+1. Create an app at <https://developer.spotify.com/dashboard> with **Web API**
+   and **Web Playback SDK** selected under APIs used.
+2. Register both redirect URIs (Spotify rejects `localhost`; use the loopback
+   IP literal, and browse to the IP too):
+   - `http://127.0.0.1:5173/api/spotify/callback` — local dev
+   - `https://1-hub.xyz/api/spotify/callback` — production
+3. Local dev reads the credentials from `.dev.vars` (gitignored):
+   ```
+   SPOTIFY_CLIENT_ID=...
+   SPOTIFY_CLIENT_SECRET=...
+   ```
+4. Production reads them from Worker secrets:
+   ```bash
+   npx wrangler secret put SPOTIFY_CLIENT_ID
+   npx wrangler secret put SPOTIFY_CLIENT_SECRET
+   ```
+
+The redirect URI is derived from the request origin. Set an optional
+`SPOTIFY_REDIRECT_URI` only when the registered URI has to differ from that
+(a tunnel, a preview domain).
+
+**Requirements for players:** Spotify Premium (the Web Playback SDK only
+streams for Premium) and a desktop browser (the SDK does not run on mobile).
+A new Spotify app starts in development mode — only users added by email under
+**Settings → User Management** can sign in, up to 25.
+
+The client secret and refresh token never reach the browser: `/api/spotify/*`
+in the Worker holds them and hands out short-lived access tokens.
+
 ## Deploy to Cloudflare
 
 ```bash

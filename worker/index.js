@@ -7,6 +7,9 @@ import {
   authorizeUrl, exchangeCode, getCurrentUser, getGroupMembers,
   createSettlementExpense, signState, verifyState,
 } from "./splitwise.js";
+import {
+  spotifyLogin, spotifyCallback, spotifyToken, spotifyLogout,
+} from "./spotify.js";
 
 const ROUTE = /^\/api\/room\/([A-Za-z0-9-]{2,32})\/.+$/;
 
@@ -20,6 +23,20 @@ export default {
     }
     if (url.pathname === "/api/splitwise/callback" && request.method === "GET") {
       return splitwiseCallback(url, env);
+    }
+
+    // ── Spotify OAuth (Know Your Song) ──────────────────────────────────
+    if (url.pathname === "/api/spotify/login" && request.method === "GET") {
+      return spotifyLogin(url, env);
+    }
+    if (url.pathname === "/api/spotify/callback" && request.method === "GET") {
+      return spotifyCallback(request, url, env);
+    }
+    if (url.pathname === "/api/spotify/token" && request.method === "GET") {
+      return spotifyToken(request, url, env);
+    }
+    if (url.pathname === "/api/spotify/logout" && request.method === "POST") {
+      return spotifyLogout(url);
     }
 
     // ── Legacy Splitwise proxy (house token via Worker secrets) ──────────

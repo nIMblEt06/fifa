@@ -3,7 +3,7 @@ import { normalizeCode } from "../utils/room";
 
 // Landing page when no room is in the URL. Picks a game; we mint a code
 // and route to it.
-export default function GamePicker({ onPick, onOpenHof }) {
+export default function GamePicker({ onPick, onOpenHof, onOpenSong }) {
   const games = [
     {
       id: "fifa",
@@ -96,6 +96,19 @@ export default function GamePicker({ onPick, onOpenHof }) {
               <div className="game-tile-cta">NEW ROOM →</div>
             </button>
           ))}
+          {onOpenSong && (
+            <button className="game-tile" onClick={onOpenSong}>
+              <div className="game-tile-title">
+                SONG<span className="slash">/</span>
+                <span className="game-tile-sub">KNOW YOURS</span>
+              </div>
+              <div className="game-tile-blurb">
+                Songless, but every track is one you already liked on Spotify. 0.1s to
+                start; miss and the clip grows. Solo — needs Premium.
+              </div>
+              <div className="game-tile-cta">PLAY →</div>
+            </button>
+          )}
           {onOpenHof && (
             <button className="game-tile hof-tile" onClick={onOpenHof}>
               <div className="game-tile-title">

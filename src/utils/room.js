@@ -47,6 +47,17 @@ export function navigateToHof() {
   if (window.location.hash !== "#/hof") window.history.replaceState(null, "", "#/hof");
 }
 
+// Know Your Song is personal, not shared — the answer space is the signed-in
+// player's own Spotify library — so it gets a room-less route like the Hall
+// of Fame rather than a code.
+export function isSongRoute() {
+  return /^#\/song/.test(window.location.hash);
+}
+
+export function navigateToSong() {
+  if (!isSongRoute()) window.history.replaceState(null, "", "#/song");
+}
+
 export function readCodeFromUrl() {
   const r = readRoomFromUrl();
   return r ? r.code : null;

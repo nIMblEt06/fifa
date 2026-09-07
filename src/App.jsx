@@ -10,22 +10,27 @@ import UndercoverApp from "./games/undercover/UndercoverApp";
 import ChickenApp from "./games/chicken/ChickenApp";
 import CageApp from "./games/cage/CageApp";
 import MafiaApp from "./games/mafia/MafiaApp";
-import { generateCode, readRoomFromUrl, writeRoomToUrl, clearRoomFromUrl, isHofRoute, navigateToHof } from "./utils/room";
+import SongApp from "./games/song/SongApp";
+import { generateCode, readRoomFromUrl, writeRoomToUrl, clearRoomFromUrl, isHofRoute, navigateToHof, isSongRoute, navigateToSong } from "./utils/room";
 
 // Top-level router. The URL hash decides what we render:
 //   #/                 → game picker
 //   #/r/CODE/fifa      → FIFA tournament
 //   #/r/CODE/lit       → Lit game
 //   #/r/CODE           → defaults to FIFA (back-compat with pre-hub rooms)
+//   #/hof              → Hall of Fame
+//   #/song             → Know Your Song (room-less: it plays your own library)
 export default function App() {
   const [route, setRoute] = useState(() => readRoomFromUrl());
   const [onHof, setOnHof] = useState(() => isHofRoute());
+  const [onSong, setOnSong] = useState(() => isSongRoute());
 
   // Re-read on hash changes (e.g. browser back/forward).
   useEffect(() => {
     const onHash = () => {
       setRoute(readRoomFromUrl());
       setOnHof(isHofRoute());
+      setOnSong(isSongRoute());
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -35,6 +40,8 @@ export default function App() {
   useEffect(() => {
     const title = onHof
       ? "HALL OF FAME"
+      : onSong
+      ? "KNOW YOUR SONG"
       : !route
       ? "1Hub"
       : route.game === "lit"
@@ -55,29 +62,47 @@ export default function App() {
             ? `MAFIA · ${route.code}`
             : `FIFA · ${route.code}`;
     document.title = title;
-  }, [route, onHof]);
+  }, [route, onHof, onSong]);
 
   const handlePick = useCallback((game, codeOverride = null) => {
     const code = codeOverride || generateCode(4);
     writeRoomToUrl(code, game);
     setRoute({ code, game });
     setOnHof(false);
+    setOnSong(false);
   }, []);
 
   const handleLeave = useCallback(() => {
     clearRoomFromUrl();
     setRoute(null);
     setOnHof(false);
+    setOnSong(false);
   }, []);
 
   const handleOpenHof = useCallback(() => {
     navigateToHof();
     setOnHof(true);
+    setOnSong(false);
+    setRoute(null);
+  }, []);
+
+  const handleOpenSong = useCallback(() => {
+    navigateToSong();
+    setOnSong(true);
+    setOnHof(false);
     setRoute(null);
   }, []);
 
   if (onHof) return <HallOfFame onLeave={handleLeave} />;
-  if (!route) return <GamePicker onPick={handlePick} onOpenHof={handleOpenHof} />;
+  if (onSong) return <SongApp onLeave={handleLeave} />;
+  if (!route)
+    return (
+      <GamePicker
+        onPick={handlePick}
+        onOpenHof={handleOpenHof}
+        onOpenSong={handleOpenSong}
+      />
+    );
   if (route.game === "lit") return <LitApp code={route.code} onLeave={handleLeave} />;
   if (route.game === "poker") return <PokerApp code={route.code} onLeave={handleLeave} />;
   if (route.game === "bluff") return <BluffApp code={route.code} onLeave={handleLeave} />;

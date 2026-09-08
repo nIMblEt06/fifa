@@ -15,6 +15,9 @@ const SCOPES = [
   "user-read-private",
   "user-read-playback-state",
   "user-modify-playback-state",
+  // Building a playlist out of the songs kept while playing.
+  "playlist-modify-private",
+  "playlist-modify-public",
 ].join(" ");
 
 const COOKIE = {

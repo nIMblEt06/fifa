@@ -108,6 +108,48 @@ A new Spotify app starts in development mode — only users added by email under
 The client secret and refresh token never reach the browser: `/api/spotify/*`
 in the Worker holds them and hands out short-lived access tokens.
 
+### The "Also liked" marquee
+
+A thin strip under the game shows songs from **the hub owner's** Liked Songs —
+not the player's — so a visitor can pick up a song or two from someone else's
+taste. Four are drawn at random and one shares a genre with the track they just
+guessed. There is no playback on the strip; the only control is a ♡.
+
+♡ on a song — on the strip, or on the reveal card once a round is over — adds
+it to a private playlist in *their* Spotify, with *their* token, right then.
+There is no staging list and no confirm step; the mark turns to a green ✓ and
+stays that way. Nothing is added automatically, and the hub never writes to
+anyone's account.
+
+There is **one playlist per browser**, created on the first ♡ and remembered in
+`localStorage` along with the ids already in it — which is what stops a song
+being added twice, since Spotify would happily store the duplicate. A status
+line under the strip links to it. "New playlist" detaches, for when the old one
+has been deleted in Spotify.
+
+To fill the strip:
+
+1. Apply the migration that creates the pool:
+   ```bash
+   npx wrangler d1 migrations apply 1hub-stats --remote
+   ```
+2. Set a publishing key, which is all that guards the write endpoint:
+   ```bash
+   npx wrangler secret put SONG_ADMIN_KEY
+   ```
+3. Sign in as the owner, open `#/song?publish=<SONG_ADMIN_KEY>`, wait for the
+   library and its genres to finish loading, and press **Publish**. The browser
+   uploads the library it already has in 500-song chunks — assembling it inside
+   the Worker would take hundreds of Spotify requests, well past a Worker's
+   subrequest budget. Re-run it whenever you want the strip refreshed.
+
+Until step 3 has been run the strip simply does not render.
+
+**Note:** creating playlists needs the `playlist-modify-private` /
+`playlist-modify-public` scopes, which were added after the game first shipped.
+Anyone who connected before that has a token without them and has to
+**Disconnect** and reconnect once; the error message says so.
+
 ## Deploy to Cloudflare
 
 ```bash

@@ -10,6 +10,7 @@ import {
 import {
   spotifyLogin, spotifyCallback, spotifyToken, spotifyLogout,
 } from "./spotify.js";
+import { songRecs, songRecsSync } from "./songRecs.js";
 
 const ROUTE = /^\/api\/room\/([A-Za-z0-9-]{2,32})\/.+$/;
 
@@ -37,6 +38,14 @@ export default {
     }
     if (url.pathname === "/api/spotify/logout" && request.method === "POST") {
       return spotifyLogout(url);
+    }
+
+    // ── Know Your Song: the hub owner's library, offered to players ──────
+    if (url.pathname === "/api/song/recs" && request.method === "GET") {
+      return cors(await songRecs(url, env));
+    }
+    if (url.pathname === "/api/song/recs/sync" && request.method === "POST") {
+      return cors(await songRecsSync(request, env));
     }
 
     // ── Legacy Splitwise proxy (house token via Worker secrets) ──────────

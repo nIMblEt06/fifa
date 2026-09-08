@@ -4401,4 +4401,191 @@ button.sh-policy:hover { outline: 3px solid var(--paper); }
   .song-reveal img { width: 56px; height: 56px; }
   .song-reveal-title { font-size: 1.2rem; }
   .song-foot { flex-wrap: wrap; }
+  .song-stat-row { gap: 0.4rem; }
+  .song-stat-value { font-size: 1.1rem; }
+  .song-keep-head { flex-wrap: wrap; gap: 0.3rem; }
+}
+
+/* ── Post-round stats ──────────────────────────────────────── */
+/* Only ever rendered once a round is over — never mid-guess, where a running
+   win rate would be one more thing to read instead of listening. */
+
+.song-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  border-top: 1px solid var(--dim);
+  padding-top: 0.8rem;
+}
+.song-stats-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.song-stat-row { display: flex; gap: 0.9rem; flex-wrap: wrap; }
+.song-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  flex: 1;
+  min-width: 62px;
+}
+.song-stat-value {
+  font-family: var(--display);
+  font-size: 1.45rem;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+.song-stat-label {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.song-stat-hint { font-size: 0.65rem; color: var(--dim-text, var(--mute)); opacity: 0.75; }
+
+.song-dist { display: flex; flex-direction: column; gap: 0.2rem; }
+.song-dist-row { display: flex; align-items: center; gap: 0.5rem; }
+.song-dist-num {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  color: var(--mute);
+  width: 0.9rem;
+  text-align: right;
+}
+.song-dist-track { flex: 1; height: 10px; background: #131313; }
+.song-dist-bar { height: 100%; background: var(--dim); transition: width 220ms ease; }
+.song-dist-count {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  color: var(--mute);
+  min-width: 1.4rem;
+}
+/* The row the round just landed in — the one number the player came for. */
+.song-dist-row.hit .song-dist-bar { background: var(--hot); }
+.song-dist-row.hit .song-dist-num,
+.song-dist-row.hit .song-dist-count { color: var(--paper); }
+
+/* ── "Also liked" marquee ──────────────────────────────────── */
+/* The hub owner's library drifting past. Thin on purpose: it is an offer, not
+   a feature — it must never compete with the guess rows above it. */
+
+.song-marquee {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  border-top: 1px solid var(--dim);
+  padding-top: 0.7rem;
+  min-width: 0;
+}
+.song-mq-label {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--mute);
+  flex-shrink: 0;
+}
+.song-mq-window {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  /* Fade the ends so items enter and leave rather than being chopped off. */
+  mask-image: linear-gradient(90deg, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
+}
+.song-mq-track {
+  display: flex;
+  align-items: center;
+  gap: 1.6rem;
+  list-style: none;
+  width: max-content;
+  animation: song-mq-scroll 46s linear infinite;
+}
+/* The list is rendered twice, so shifting by exactly half loops seamlessly. */
+@keyframes song-mq-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+/* Stop while anyone is reading or reaching for a heart. */
+.song-mq-window:hover .song-mq-track,
+.song-mq-track:focus-within { animation-play-state: paused; }
+
+.song-mq-item { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+.song-mq-item img,
+.song-mq-blank { width: 26px; height: 26px; object-fit: cover; flex-shrink: 0; }
+.song-mq-blank { background: var(--dim); }
+.song-mq-text { display: flex; align-items: baseline; gap: 0.45rem; white-space: nowrap; }
+.song-mq-title { font-size: 0.78rem; color: var(--bone); }
+.song-mq-artist { font-size: 0.7rem; color: var(--mute); }
+
+.song-mq-heart {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--mute);
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.15rem 0.25rem;
+  transition: color 120ms ease, transform 120ms ease;
+}
+.song-mq-heart:hover:not(:disabled) { color: var(--hot); transform: scale(1.18); }
+.song-mq-heart.on { color: var(--hot); }
+.song-mq-heart.big { font-size: 1.5rem; margin-left: auto; align-self: flex-start; }
+/* Already in the playlist: a mark, not a control. Green rather than magenta,
+   so "done" never reads as "kept but not saved". */
+.song-mq-heart.done { color: var(--live); }
+/* Mid-request. Dimmed rather than spinning: one song is one quick call, and a
+   spinner on a strip this thin reads as an error. */
+.song-mq-heart.busy { color: var(--warn); opacity: 0.7; }
+.song-mq-heart:disabled { cursor: default; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* No drift: the strip becomes an ordinary row the player scrolls themselves. */
+  .song-mq-track { animation: none; width: auto; }
+  .song-mq-window { overflow-x: auto; mask-image: none; }
+  .song-mq-item[aria-hidden="true"] { display: none; }
+  .song-mq-heart:hover { transform: none; }
+}
+
+/* ── Your list → a playlist ────────────────────────────────── */
+
+.song-keep {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  border-top: 1px solid var(--dim);
+  padding-top: 0.7rem;
+}
+.song-keep-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.song-keep-title {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--bone);
+}
+.song-keep-status {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  color: var(--mute);
+  text-align: right;
+}
+
+
+.song-publish {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border-top: 1px solid var(--dim);
+  padding-top: 0.7rem;
 }

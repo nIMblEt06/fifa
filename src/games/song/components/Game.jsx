@@ -6,8 +6,16 @@ import { STAGES_SEC, MAX_GUESSES } from "../utils/tokens";
 import {
   NO_FILTERS, applyFilters, buildFacets, loadFilters, saveFilters, toggle,
 } from "../utils/filters";
+import { usePlaylistState } from "../utils/playlist";
+import { readStats, recordRound, resetStats } from "../utils/stats";
+import { pickGenre } from "../utils/recs";
 import GuessInput from "./GuessInput";
 import FilterBar from "./FilterBar";
+import StatsPanel from "./StatsPanel";
+import Marquee from "./Marquee";
+import PlaylistBar from "./PlaylistBar";
+import KeepButton from "./KeepButton";
+import PublishControl from "./PublishControl";
 
 // A guess is { text, sub, kind } where kind is
 // "wrong" | "artist" | "skipped" | "correct". "artist" is still a miss, but a
@@ -43,6 +51,18 @@ const MARK = { correct: "✓", artist: "~", wrong: "✗", skipped: "–" };
 
 export default function Game({ library, progress, onRefresh, onLogout }) {
   const [volume, setVolume] = useState(0.7);
+  const { playlist, adding } = usePlaylistState();
+  const playlistIds = useMemo(
+    () => new Set(playlist?.trackIds ?? []),
+    [playlist]
+  );
+  const [stats, setStats] = useState(readStats);
+  // One genre off the track just guessed, so the strip can answer with
+  // something adjacent to what the player was listening to.
+  const [echoGenre, setEchoGenre] = useState(null);
+  // Which distribution row the round just finished in, so the panel can point
+  // at it. Null after a loss: a loss belongs in no bucket.
+  const [lastBucket, setLastBucket] = useState(null);
   const { status, error, playError, playing, prime, playClip, playFull, halt } =
     usePlayer(volume);
 
@@ -71,17 +91,28 @@ export default function Game({ library, progress, onRefresh, onLogout }) {
   const [awaitingPool, setAwaitingPool] = useState(false);
 
   const startedRef = useRef(false);
+  // Rounds can overlap: a "Next song" double-click, a filter change landing
+  // mid-cue, or the awaiting-pool effect re-firing as the library streams in.
+  // A superseded round must stop touching the UI — otherwise it clears
+  // `cueing` for a cue that is still running, or reports its own abandoned
+  // track as unplayable.
+  const roundId = useRef(0);
   const done = outcome !== "playing";
   const stage = Math.min(guesses.length, STAGES_SEC.length - 1);
   const unlocked = STAGES_SEC[stage];
 
   const newRound = useCallback(async () => {
+    const id = ++roundId.current;
+    const live = () => roundId.current === id;
+
     setCueError(null);
     setAwaitingPool(false);
     setGuesses([]);
     setOutcome("playing");
+    setLastBucket(null);
     setCueing(true);
     await halt();
+    if (!live()) return;
 
     if (pool.length === 0) {
       if (progress.complete) setCueError("No songs match the current filters.");
@@ -99,9 +130,11 @@ export default function Game({ library, progress, onRefresh, onLogout }) {
       pushRecent(next.id);
       try {
         await prime(next.uri);
+        if (!live()) return;
         setCueing(false);
         return;
       } catch (e) {
+        if (!live()) return;
         lastError = e instanceof Error ? e.message : String(e);
       }
     }
@@ -149,11 +182,17 @@ export default function Game({ library, progress, onRefresh, onLogout }) {
 
     if (guess.kind === "correct") {
       setOutcome("won");
+      setStats(recordRound(true, next.length));
+      setLastBucket(next.length);
+      setEchoGenre(pickGenre(track));
       void playFull();
       return;
     }
     if (next.length >= MAX_GUESSES) {
       setOutcome("lost");
+      setStats(recordRound(false, next.length));
+      setLastBucket(null);
+      setEchoGenre(pickGenre(track));
       void playFull();
     }
   }
@@ -324,10 +363,26 @@ export default function Game({ library, progress, onRefresh, onLogout }) {
                   {track.album} · {track.year}
                 </p>
               </div>
+              <KeepButton
+                track={track}
+                inPlaylist={playlistIds.has(track.id)}
+                adding={adding.has(track.id)}
+                big
+              />
             </div>
-            <button className="song-btn primary" onClick={() => void newRound()}>
-              Next song
+            <button
+              className="song-btn primary"
+              disabled={cueing}
+              onClick={() => void newRound()}
+            >
+              {cueing ? "Cueing…" : "Next song"}
             </button>
+
+            <StatsPanel
+              stats={stats}
+              highlight={lastBucket}
+              onReset={() => setStats(resetStats())}
+            />
           </div>
         ) : (
           <GuessInput
@@ -341,6 +396,17 @@ export default function Game({ library, progress, onRefresh, onLogout }) {
           />
         )}
       </div>
+
+      <Marquee
+        genre={echoGenre}
+        roundKey={stats.rounds}
+        playlistIds={playlistIds}
+        adding={adding}
+      />
+
+      <PlaylistBar />
+
+      <PublishControl library={library} progress={progress} />
 
       <footer className="song-foot">
         <span className="song-meta">Vol</span>

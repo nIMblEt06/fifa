@@ -39,7 +39,13 @@ export function usePlayer(volume) {
   const deviceIdRef = useRef(null);
   const stopTimer = useRef(null);
   const volumeRef = useRef(volume);
-  const primingRef = useRef(false);
+  // Which prime() call owns the player, or 0 when none does. A counter rather
+  // than a flag: two overlapping primes (a fast "Next song" double-click, a
+  // filter change landing mid-cue) would otherwise have the first one's
+  // cleanup unmute the player while the second is still loading, and the
+  // track would play out loud from the top.
+  const primeIdRef = useRef(0);
+  const owningPrimeRef = useRef(0);
   const uriRef = useRef(null);
 
   const [status, setStatus] = useState("loading"); // loading | ready | error
@@ -50,7 +56,7 @@ export function usePlayer(volume) {
   useEffect(() => {
     volumeRef.current = volume;
     // Never unmute mid-prime; prime restores the volume itself when it is done.
-    if (!primingRef.current) playerRef.current?.setVolume(volume).catch(() => {});
+    if (!owningPrimeRef.current) playerRef.current?.setVolume(volume).catch(() => {});
   }, [volume]);
 
   useEffect(() => {
@@ -86,7 +92,7 @@ export function usePlayer(volume) {
         // while priming so nothing is ever audible before the first clip.
         player.addListener("player_state_changed", (state) => {
           if (disposed) return;
-          if (primingRef.current) {
+          if (owningPrimeRef.current) {
             // Mute unconditionally — silence comes from volume, not from
             // winning a race. Only pause once the SDK actually holds our
             // track; pausing mid-load fights the loader and it may never
@@ -192,20 +198,29 @@ export function usePlayer(volume) {
       if (!player) throw new Error("Player is not ready yet.");
 
       if (stopTimer.current) clearTimeout(stopTimer.current);
-      primingRef.current = true;
+      const id = ++primeIdRef.current;
+      owningPrimeRef.current = id;
       uriRef.current = uri;
       setPlayError(null);
+
+      // A later prime has taken the player; this one must stop touching it.
+      const superseded = () => primeIdRef.current !== id;
 
       try {
         await player.setVolume(0).catch(() => {});
         await playWithRecovery(uri);
+        if (superseded()) return;
 
         // Wait for the SDK to actually load the track, without interfering.
-        // It is inaudible throughout because the volume is 0.
+        // It is inaudible throughout because the volume is 0. Give up early if
+        // a newer prime has started: the device is loading *its* track now, so
+        // this one would wait out the full budget and then report a track that
+        // was never going to load as unplayable.
         const loaded = await waitUntil(
-          async () => isOurs(await player.getCurrentState(), uri),
+          async () => superseded() || isOurs(await player.getCurrentState(), uri),
           12000
         );
+        if (superseded()) return;
         if (!loaded) {
           throw new Error(
             "Spotify never started this track — it may not be playable in your region."
@@ -221,9 +236,13 @@ export function usePlayer(volume) {
         }, 3000);
         await player.seek(0).catch(() => {});
       } finally {
-        primingRef.current = false;
-        await player.setVolume(volumeRef.current).catch(() => {});
-        setPlaying(false);
+        // Only the prime that still owns the player restores the volume —
+        // otherwise an older call unmutes the track a newer one is loading.
+        if (!superseded()) {
+          owningPrimeRef.current = 0;
+          await player.setVolume(volumeRef.current).catch(() => {});
+          setPlaying(false);
+        }
       }
     },
     [playWithRecovery]

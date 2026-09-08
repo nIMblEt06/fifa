@@ -166,3 +166,31 @@ export async function streamGenres(tracks, onProgress, concurrency = 4) {
     track.genres = [...set];
   }
 }
+
+/** Creates an empty private playlist on the signed-in account. */
+export async function createPlaylist(name, description = "") {
+  const me = await getProfile();
+  const playlist = await api(`/users/${encodeURIComponent(me.id)}/playlists`, {
+    method: "POST",
+    body: JSON.stringify({ name, description, public: false }),
+  });
+  return {
+    id: playlist.id,
+    url: playlist.external_urls?.spotify ?? null,
+    name: playlist.name,
+  };
+}
+
+/**
+ * Appends tracks to a playlist, 100 at a time — Spotify's cap on one add.
+ * The batches run in sequence rather than through mapLimit so the playlist
+ * keeps the order given.
+ */
+export async function addTracksToPlaylist(playlistId, uris) {
+  for (let i = 0; i < uris.length; i += 100) {
+    await api(`/playlists/${playlistId}/tracks`, {
+      method: "POST",
+      body: JSON.stringify({ uris: uris.slice(i, i + 100) }),
+    });
+  }
+}

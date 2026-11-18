@@ -121,7 +121,7 @@ function freshPolicyDeck(rng) {
 // ── State construction ─────────────────────────────────────────────────────
 
 // players: [{id, name}], 5–10 of them.
-export function startGame(players, _opts = {}, rng = Math.random) {
+export function startGame(players, rng = Math.random) {
   const n = players.length;
   if (n < 5 || n > 10) throw new Error("Secret Hitler needs 5–10 players");
   const counts = roleCountsFor(n);
@@ -174,6 +174,7 @@ export function startGame(players, _opts = {}, rng = Math.random) {
     presidentDraw: null,           // 3 policies, visible only to President
     chancellorCards: null,         // 2 policies, visible only to Chancellor
     vetoRequested: false,
+    vetoRefused: false,          // set when the President refuses a veto
 
     // Powers.
     pendingPower: null,            // {kind, by} when a power must be resolved
@@ -244,10 +245,9 @@ function ensureDeck(state) {
 }
 
 // ── Reshuffle note ──
-// We need a deterministic RNG inside enact paths too. The DO seeds startGame's
-// RNG; for mid-game reshuffles we accept an optional rng on the action and stash
-// it on state via `withRng`. Default is Math.random (fine for the client, which
-// never persists authoritative reshuffles).
+// Mid-game reshuffles use the RNG stashed on state via `withRng`, defaulting to
+// Math.random (fine for the client, which never persists authoritative
+// reshuffles).
 
 function clone(state) {
   const rng = state._rng;
@@ -336,10 +336,12 @@ export function castVote(state, byId, vote) {
     next.electionTracker += 1;
     next.log.push({ t: Date.now(), kind: "election_failed", tracker: next.electionTracker });
     if (next.electionTracker >= MAX_TRACKER) {
+      // The chaos enact itself rotates the presidency exactly once.
       autoEnactTopPolicy(next);
       if (next.winner) return { state: next };
+    } else {
+      advancePresidency(next);
     }
-    advancePresidency(next);
   }
   next.nominee = null;
   next.votes = {};
@@ -351,6 +353,7 @@ function beginLegislative(state) {
   state.presidentDraw = state.deck.splice(0, 3);
   state.chancellorCards = null;
   state.vetoRequested = false;
+  state.vetoRefused = false;
   state.phase = "legislative_president";
   state.log.push({ t: Date.now(), kind: "legislative_start", president: state.president, chancellor: state.chancellor });
 }
@@ -397,6 +400,9 @@ export function proposeVeto(state, byId) {
   if (byId !== state.chancellor) return { error: "Only the Chancellor proposes a veto" };
   if (state.fascistPolicies < VETO_UNLOCK) return { error: "Veto not yet unlocked" };
   if (state.vetoRequested) return { error: "Veto already proposed" };
+  if (state.vetoRefused) {
+    return { error: "The veto was already refused — the Chancellor must enact a policy" };
+  }
   const next = clone(state);
   next.vetoRequested = true;
   next.phase = "veto";
@@ -418,13 +424,15 @@ export function respondVeto(state, byId, consent) {
     // A successful veto advances the election tracker like a failed government.
     next.electionTracker += 1;
     if (next.electionTracker >= MAX_TRACKER) {
+      // The chaos enact itself rotates the presidency exactly once.
       autoEnactTopPolicy(next);
       if (next.winner) return { state: next };
+    } else {
+      finishGovernment(next);
     }
-    advancePresidency(next);
-    finishGovernment(next);
   } else {
     next.vetoRequested = false;
+    next.vetoRefused = true;
     next.phase = "legislative_chancellor";
     next.log.push({ t: Date.now(), kind: "veto_rejected" });
   }
@@ -714,7 +722,7 @@ export function redactFor(state, viewerId) {
     pendingPower: state.pendingPower ? { kind: state.pendingPower.kind, by: state.pendingPower.by } : null,
     eligibleChancellors: state.phase === "nomination" ? eligibleChancellors(state) : [],
     investigated: Object.keys(state.investigated),
-    log: redactLog(state, viewerId),
+    log: state.log.slice(-40),     // most recent events
     you: seated
       ? { id: viewerId, role: state.roles[viewerId], party: partyOf(state.roles[viewerId]), alive: state.alive[viewerId] }
       : null,
@@ -741,18 +749,4 @@ export function redactFor(state, viewerId) {
   }
 
   return base;
-}
-
-// The log is mostly public. Strip private payloads (drawn/discarded contents,
-// investigation parties, peeked cards) for non-owners. Most events here carry
-// no secret payload by construction, so this is a light pass.
-function redactLog(state, viewerId) {
-  return state.log.slice(-40).map((e) => {
-    if (e.kind === "investigated" && e.president !== viewerId) {
-      // Public knows an investigation happened, not the result. (Result lives
-      // in investigationResult, owner-only.)
-      return e;
-    }
-    return e;
-  });
 }

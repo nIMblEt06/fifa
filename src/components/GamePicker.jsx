@@ -15,13 +15,13 @@ export default function GamePicker({ onPick, onOpenHof, onOpenSong }) {
       id: "lit",
       title: "LIT",
       tagline: "FOUR-OF-A-KIND",
-      blurb: "Local Go-Fish variant. Ask for ranks you hold, hunt the deck for full sets.",
+      blurb: "Online Go-Fish variant. Ask for ranks you hold, hunt the deck for full sets.",
     },
     {
       id: "poker",
       title: "POKER",
       tagline: "NO-LIMIT HOLD'EM",
-      blurb: "Real dealt hands, blinds, side pots. Cash out and settle the net to Splitwise.",
+      blurb: "Real dealt hands, blinds, side pots. Cash out and see exactly who pays whom.",
     },
     {
       id: "bluff",

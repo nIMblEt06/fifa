@@ -1,13 +1,12 @@
-import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import { useState, useMemo, useRef } from "react";
 import Reactions from "../../components/Reactions";
 import { shareUrl, clientId } from "../../utils/room";
 import { useRoom } from "../../utils/useRoom";
-import { computeNets, imbalance, isBalanced, computeSettlement, moneyPerChip } from "./money";
+import { computeNets, imbalance, isBalanced, moneyPerChip } from "./money";
+import { computeSettlement } from "../../utils/settlement.js";
 import { evaluate, describeScore } from "./engine";
-import MemberCombobox from "../../components/MemberCombobox";
 
 const SUIT_GLYPH = { S: "♠", H: "♥", D: "♦", C: "♣" };
-const firstName = (name) => (name || "").toLowerCase().trim().split(/\s+/)[0] || "";
 const todayIso = () => {
   const d = new Date();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -22,16 +21,6 @@ const fmt = (n, cur = "INR") => {
 };
 const chipsFmt = (n) => (Number(n) || 0).toLocaleString();
 
-// Pull a one-shot ?sw=… marker out of the URL hash (the OAuth callback
-// bounces back to #/r/CODE/poker?sw=connected) and scrub it.
-function takeSwFlag() {
-  const m = window.location.hash.match(/[?&]sw=([a-z]+)/);
-  if (!m) return null;
-  const cleaned = window.location.hash.replace(/[?&]sw=[a-z]+/, "");
-  window.history.replaceState(null, "", window.location.pathname + cleaned);
-  return m[1];
-}
-
 export default function PokerApp({ code, onLeave }) {
   const me = clientId();
   const { state: view, presence, reactions, connected, error, dismissError, sendAction, sendReaction } =
@@ -43,16 +32,8 @@ export default function PokerApp({ code, onLeave }) {
   const isV2 = !!view && view.gameType === "poker" && "table" in view;
   const phase = isV2 ? view.phase : "lobby";
   const config = isV2 ? view.config : { ratio: { chips: 5000, money: 250 }, sb: 25, bb: 50, currency: "INR" };
-  const sw = (isV2 && view.splitwise) || { connected: false };
   const currency = config.currency || "INR";
   const mpc = moneyPerChip(config.ratio);
-
-  const [swFlag, setSwFlag] = useState(() => takeSwFlag());
-  useEffect(() => {
-    if (!swFlag) return;
-    const id = setTimeout(() => setSwFlag(null), 5000);
-    return () => clearTimeout(id);
-  }, [swFlag]);
 
   const [copied, setCopied] = useState(false);
   const copyLink = () => {
@@ -110,18 +91,9 @@ export default function PokerApp({ code, onLeave }) {
         </div>
       )}
 
-      {swFlag && (
-        <div className={"poker-sw-flag " + (swFlag === "connected" ? "ok" : "bad")}>
-          {swFlag === "connected" && "✓ Splitwise connected"}
-          {swFlag === "denied" && "Splitwise access was denied"}
-          {swFlag === "expired" && "Splitwise login expired — try again"}
-          {swFlag === "error" && "Splitwise connection failed — try again"}
-        </div>
-      )}
-
       <main>
         {phase === "lobby" && (
-          <Lobby code={code} me={me} view={isV2 ? view : null} sw={sw} config={config}
+          <Lobby me={me} view={isV2 ? view : null} config={config}
                  currency={currency} sendAction={sendAction} />
         )}
         {phase === "playing" && isV2 && view.table && (
@@ -138,66 +110,16 @@ export default function PokerApp({ code, onLeave }) {
 }
 
 // ── LOBBY ───────────────────────────────────────────────────────────
-function Lobby({ code, me, view, sw, config, currency, sendAction }) {
+function Lobby({ me, view, config, currency, sendAction }) {
   const lobby = view?.lobby || [];
   const joined = lobby.some((p) => p.id === me);
-  const members = sw.members || null;
 
   const [name, setName] = useState("");
-  const [memberId, setMemberId] = useState("");
-
-  // Picking a Splitwise member fills the name; clearing keeps the typed name.
-  const pickMember = (val) => {
-    setMemberId(val);
-    const m = members?.find((x) => String(x.id) === String(val));
-    if (m) setName(m.name);
-  };
 
   const join = () => {
     const n = name.trim();
     if (!n) return;
-    sendAction({ type: "join", name: n, memberId: memberId || null });
-  };
-
-  // Group picker
-  const [groups, setGroups] = useState(null);
-  const [groupsError, setGroupsError] = useState(null);
-  const [loadingGroups, setLoadingGroups] = useState(false);
-  const [pickingGroup, setPickingGroup] = useState(false);
-  const needsGroup = sw.connected && !sw.groupId;
-
-  const loadGroups = useCallback(async () => {
-    setLoadingGroups(true);
-    setGroupsError(null);
-    try {
-      const res = await fetch(`/api/room/${code.toLowerCase()}/splitwise/groups`);
-      const data = await res.json();
-      if (!res.ok) setGroupsError(data?.error || `Failed (${res.status})`);
-      else setGroups(data);
-    } catch (e) {
-      setGroupsError(`Could not reach the server: ${e.message}`);
-    } finally {
-      setLoadingGroups(false);
-    }
-  }, [code]);
-
-  useEffect(() => {
-    if ((needsGroup || pickingGroup) && !groups && !loadingGroups && !groupsError) loadGroups();
-  }, [needsGroup, pickingGroup, groups, loadingGroups, groupsError, loadGroups]);
-
-  const pickGroup = async (groupId) => {
-    try {
-      const res = await fetch(`/api/room/${code.toLowerCase()}/splitwise/group`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ groupId }),
-      });
-      const data = await res.json();
-      if (!res.ok) setGroupsError(data?.error || `Failed (${res.status})`);
-      else setPickingGroup(false);
-    } catch (e) {
-      setGroupsError(`Could not reach the server: ${e.message}`);
-    }
+    sendAction({ type: "join", name: n });
   };
 
   // Config (host-less: anyone in the lobby can tweak)
@@ -208,68 +130,14 @@ function Lobby({ code, me, view, sw, config, currency, sendAction }) {
     <div className="setup poker-lobby">
       <h2>Lobby</h2>
 
-      {/* ── Splitwise connection ─────────────────────────────── */}
-      <div className="poker-sw">
-        <div className="label">SPLITWISE</div>
-        {!sw.connected && (
-          <div className="poker-sw-connect">
-            <div className="poker-ratio-note">
-              Whoever runs the books connects their Splitwise — the game settles into one of their groups.
-            </div>
-            <a className="start-btn poker-sw-btn" href={`/api/splitwise/auth/start?room=${code.toLowerCase()}`}>
-              CONNECT SPLITWISE →
-            </a>
-          </div>
-        )}
-        {sw.connected && (
-          <div className="poker-sw-status">
-            <span className="poker-sw-who">
-              ✓ {sw.via === "env" ? "house account" : sw.userName || "connected"}
-            </span>
-            {sw.groupId && !pickingGroup ? (
-              <span className="poker-sw-group">
-                → <strong>{sw.groupName || `group #${sw.groupId}`}</strong>
-                {sw.members ? ` · ${sw.members.length} members` : ""}
-                <button className="poker-btn poker-sw-change" onClick={() => { setPickingGroup(true); setGroups(null); }}>
-                  change
-                </button>
-              </span>
-            ) : (
-              <div className="poker-sw-groups">
-                {loadingGroups && <span className="poker-ratio-note">Loading your groups…</span>}
-                {groupsError && (
-                  <span className="poker-warn">
-                    {groupsError}{" "}
-                    <button className="poker-btn" onClick={loadGroups}>Retry</button>
-                  </span>
-                )}
-                {groups && groups.length === 0 && <span className="poker-ratio-note">No groups on this account.</span>}
-                {groups &&
-                  groups.map((g) => (
-                    <button key={g.id} className="poker-btn poker-sw-grouppick" onClick={() => pickGroup(g.id)}>
-                      {g.name} <span className="muted">· {g.memberCount}</span>
-                    </button>
-                  ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
       {/* ── Take a seat ──────────────────────────────────────── */}
       <div className="label" style={{ marginTop: "1.25rem" }}>TAKE A SEAT</div>
-      {members && (
-        <div className="poker-map-row">
-          <span className="player-label">Splitwise member</span>
-          <MemberCombobox members={members} value={memberId} onChange={pickMember} />
-        </div>
-      )}
       <div className="input-row">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && join()}
-          placeholder={members ? "…or type a name (guest)" : "Your name"}
+          placeholder="Your name"
           maxLength={24}
         />
         <button onClick={join} disabled={!name.trim()}>{joined ? "Update" : "Join"}</button>
@@ -279,7 +147,6 @@ function Lobby({ code, me, view, sw, config, currency, sendAction }) {
         {lobby.map((p) => (
           <li key={p.id}>
             {p.name}
-            {p.memberId && <span className="poker-sw-tag" title="Mapped to Splitwise">sw</span>}
             {p.id === me && <span className="muted"> (you)</span>}
             {p.id === me && (
               <button className="remove-btn" onClick={() => sendAction({ type: "pokerLeave" })} aria-label="Leave">
@@ -488,9 +355,9 @@ function Table({ me, view, mpc, currency, sendAction }) {
                         onClick={() => { act("raise", Number(raiseTo)); setRaiseOpen(false); }}>↑</button>
               </div>
               <div className="poker-raise-quick">
-                <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(t.bb, myMax)))}>1 BB</button>
-                <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(Math.round((h.pot + h.currentBet) / 2), myMax)))}>1/2 Pot</button>
-                <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(h.pot * 2 + h.currentBet, myMax)))}>Pot</button>
+                <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(Math.max(h.minRaiseTo, h.currentBet + t.bb), myMax)))}>+1 BB</button>
+                <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(h.currentBet + Math.round((h.pot + h.currentBet) / 2), myMax)))}>1/2 Pot</button>
+                <button className="poker-btn" onClick={() => setRaiseTo(String(Math.min(h.currentBet + h.pot + h.currentBet, myMax)))}>Pot</button>
                 <button className="poker-btn poker-act-expand" onClick={() => setRaiseOpen(false)}>✕</button>
               </div>
             </div>
@@ -596,22 +463,20 @@ function LastAction({ e, nameOf, me }) {
 // ── RESULTS / SETTLEMENT ────────────────────────────────────────────
 function Results({ code, view, mpc, currency, sendAction }) {
   const t = view.table;
-  const sw = view.splitwise || { connected: false };
-  const members = sw.members || null;
 
   // Settlement rows: live seats (stack + queued rebuys) + cashed-out seats.
   const rows = useMemo(() => {
     const out = [];
     for (const s of t.cashedOut) {
       out.push({
-        id: s.id, name: s.name, memberId: s.memberId,
+        id: s.id, name: s.name,
         buyInChips: (s.buyIns || []).reduce((a, b) => a + b, 0),
         finalChips: s.finalChips,
       });
     }
     for (const s of t.seats) {
       out.push({
-        id: s.id, name: s.name, memberId: s.memberId,
+        id: s.id, name: s.name,
         buyInChips: s.buyInChips,
         finalChips: s.stack + (s.pendingChips || 0),
       });
@@ -624,56 +489,16 @@ function Results({ code, view, mpc, currency, sendAction }) {
   const balanced = isBalanced(nets, Math.max(1, mpc));
   const transfers = useMemo(() => computeSettlement(nets), [nets]);
 
-  // Splitwise mapping: seed from seat memberIds, then first-name match.
-  const [mapping, setMapping] = useState({});
-  useEffect(() => {
-    setMapping((prev) => {
-      const next = { ...prev };
-      for (const r of rows) {
-        if (next[r.id]) continue;
-        if (r.memberId) { next[r.id] = String(r.memberId); continue; }
-        const match = members && members.find((m) => firstName(m.name) === firstName(r.name));
-        next[r.id] = match ? String(match.id) : "";
-      }
-      return next;
-    });
-  }, [rows, members]);
-
-  const [settling, setSettling] = useState(false);
-  const [settleStatus, setSettleStatus] = useState(null);
-
-  const settle = async () => {
-    const participants = [];
-    for (const n of nets) {
-      if (Math.abs(n.net) < 0.005) continue;
-      const userId = mapping[n.id];
-      if (!userId) {
-        setSettleStatus({ error: `${n.name} is not mapped to a Splitwise member.` });
-        return;
-      }
-      participants.push({ userId, net: n.net });
-    }
-    if (participants.length === 0) {
-      setSettleStatus({ error: "Nothing to settle — everyone is even." });
-      return;
-    }
-    setSettling(true);
-    setSettleStatus(null);
+  const [copiedSettle, setCopiedSettle] = useState(false);
+  const copySettlement = () => {
     const date = todayIso();
-    try {
-      const res = await fetch(`/api/room/${code.toLowerCase()}/splitwise/settle`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description: date, currency, date, participants }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.ok) setSettleStatus({ error: data?.error || `Failed (${res.status})` });
-      else setSettleStatus({ ok: true, expenseId: data.expenseId, cost: data.cost, date });
-    } catch (e) {
-      setSettleStatus({ error: `Could not reach the server: ${e.message}` });
-    } finally {
-      setSettling(false);
-    }
+    const lines = transfers.map((tr) =>
+      `${tr.fromName} pays ${tr.toName} ${fmt(tr.amount, currency).replace("−", "")}`
+    );
+    navigator.clipboard?.writeText(`Poker night ${date} (${code}):\n${lines.join("\n")}`).then(() => {
+      setCopiedSettle(true);
+      setTimeout(() => setCopiedSettle(false), 1400);
+    });
   };
 
   return (
@@ -729,53 +554,11 @@ function Results({ code, view, mpc, currency, sendAction }) {
           ))}
         </ul>
       )}
-
-      <div className="label" style={{ marginTop: "1.5rem" }}>SETTLE TO SPLITWISE</div>
-      <div className="poker-splitwise">
-        {!sw.connected && (
-          <div className="poker-warn">
-            Splitwise isn&apos;t connected for this room.
-            <a className="poker-btn" style={{ marginLeft: "0.6rem" }}
-               href={`/api/splitwise/auth/start?room=${code.toLowerCase()}`}>
-              Connect →
-            </a>
-          </div>
-        )}
-        {sw.connected && !sw.groupId && (
-          <div className="poker-warn">No group selected — pick one from the lobby.</div>
-        )}
-        {sw.connected && sw.groupId && (
-          <>
-            <div className="poker-ratio-note">
-              Group: <strong>{sw.groupName || `#${sw.groupId}`}</strong>
-              {sw.via === "env" ? " (house account)" : sw.userName ? ` · via ${sw.userName}` : ""}
-            </div>
-            {members && (
-              <div className="poker-map">
-                {rows.map((r) => (
-                  <div className="poker-map-row" key={r.id}>
-                    <span className="player-label">{r.name}</span>
-                    <MemberCombobox
-                      members={members}
-                      value={mapping[r.id] ?? ""}
-                      onChange={(val) => setMapping((m) => ({ ...m, [r.id]: val }))}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-            <button className="start-btn" onClick={settle} disabled={settling || transfers.length === 0}>
-              {settling ? "Settling…" : "Settle to Splitwise →"}
-            </button>
-          </>
-        )}
-        {settleStatus?.error && <div className="poker-warn">{settleStatus.error}</div>}
-        {settleStatus?.ok && (
-          <div className="poker-even">
-            ✓ Splitwise expense created{settleStatus.expenseId ? ` (#${settleStatus.expenseId})` : ""} — {fmt(settleStatus.cost, currency)} on {settleStatus.date}.
-          </div>
-        )}
-      </div>
+      {transfers.length > 0 && (
+        <button className="poker-btn" style={{ marginTop: "1rem" }} onClick={copySettlement}>
+          {copiedSettle ? "✓ COPIED" : "COPY SETTLEMENT"}
+        </button>
+      )}
 
       <div className="poker-buttons" style={{ marginTop: "1.5rem" }}>
         <button className="poker-btn" onClick={() => sendAction({ type: "pokerResume" })}>

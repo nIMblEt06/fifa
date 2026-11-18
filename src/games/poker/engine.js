@@ -6,7 +6,7 @@
 // (constants + helpers only; clients never see the deck).
 //
 // Money model: the table runs on CHIPS. The chip↔money ratio and the
-// Splitwise settlement live outside the engine (money.js + RoomDO) — the
+// cash settlement live outside the engine (money.js) — the
 // engine only guarantees chips are conserved: sum(stacks) + pot stays equal
 // to sum(buy-ins) of everyone dealt in.
 //
@@ -131,7 +131,7 @@ export function describeScore(score) {
 
 // Create a table from lobby players. Everyone buys in for `startingStack`
 // chips (one standard stack).
-//   players: [{ id, name, memberId? }]
+//   players: [{ id, name }]
 export function createTable(players, config) {
   const { sb, bb, startingStack } = config;
   if (players.length < 2) throw new Error("Need at least 2 players");
@@ -142,7 +142,6 @@ export function createTable(players, config) {
     seats: players.map((p) => ({
       id: p.id,
       name: p.name,
-      memberId: p.memberId ?? null,
       stack: startingStack,
       buyIns: [startingStack],
       pendingChips: 0,
@@ -555,7 +554,6 @@ export function seatPlayer(table, player, startingStack) {
   t.seats.push({
     id: player.id,
     name: player.name,
-    memberId: player.memberId ?? null,
     stack: startingStack,
     buyIns: [startingStack],
     pendingChips: 0,
@@ -578,7 +576,6 @@ export function cashOutPlayer(table, playerId) {
   t.cashedOut.push({
     id: seat.id,
     name: seat.name,
-    memberId: seat.memberId,
     buyIns: seat.buyIns,
     finalChips: seat.stack + seat.pendingChips,
   });
@@ -590,19 +587,19 @@ export function cashOutPlayer(table, playerId) {
   return { table: t };
 }
 
-// Settlement rows for everyone who ever sat: [{id,name,memberId,buyInChips,finalChips}].
+// Settlement rows for everyone who ever sat: [{id,name,buyInChips,finalChips}].
 export function settlementRows(table) {
   const rows = [];
   for (const s of table.cashedOut) {
     rows.push({
-      id: s.id, name: s.name, memberId: s.memberId,
+      id: s.id, name: s.name,
       buyInChips: s.buyIns.reduce((a, b) => a + b, 0),
       finalChips: s.finalChips,
     });
   }
   for (const s of table.seats) {
     rows.push({
-      id: s.id, name: s.name, memberId: s.memberId,
+      id: s.id, name: s.name,
       buyInChips: s.buyIns.reduce((a, b) => a + b, 0),
       finalChips: s.stack + s.pendingChips,
     });
@@ -636,7 +633,6 @@ export function redactFor(table, viewerId) {
     seats: table.seats.map((s) => ({
       id: s.id,
       name: s.name,
-      memberId: s.memberId,
       stack: s.stack,
       pendingChips: s.pendingChips,
       sittingOut: s.sittingOut,

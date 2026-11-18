@@ -116,7 +116,7 @@ export function useRoom(code, opts = {}) {
         wsRef.current = null;
       }
     };
-  }, [code, game, cid]);
+  }, [code, game, cid, raiseError]);
 
   const sendState = useCallback(
     (next) => {

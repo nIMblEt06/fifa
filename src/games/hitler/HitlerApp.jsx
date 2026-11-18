@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import Reactions from "../../components/Reactions";
 import { useRoom } from "../../utils/useRoom";
 import { shareUrl, clientId } from "../../utils/room";
+import { powerFor } from "./engine.js";
 
 // Secret Hitler — CC BY-NC-SA 4.0, Goat, Wolf & Cabbage (secrethitler.com).
 // Private, non-commercial friends app — permitted by the license.
@@ -181,7 +182,8 @@ function Table({ view, me, send, onReset }) {
     liberalPolicies, fascistPolicies, electionTracker, deckCount,
   } = view;
 
-  const meAlive = you?.alive !== false && !!you;
+  const isSpectator = !you;
+  const meAlive = !isSpectator && you.alive !== false;
   const isPresident = president === me;
   const isChancellor = chancellor === me;
 
@@ -216,6 +218,7 @@ function Table({ view, me, send, onReset }) {
         isPresident={isPresident}
         isChancellor={isChancellor}
         meAlive={meAlive}
+        isSpectator={isSpectator}
       />
 
       <LastEvent view={view} me={me} />
@@ -239,7 +242,7 @@ function Tracks({ liberal, fascist, tracker, deckCount, playerCount }) {
         <div className="sh-track-label">FASCIST · {fascist}/6</div>
         <div className="sh-track-slots">
           {Array.from({ length: 6 }, (_, i) => {
-            const power = i + 1 >= 1 ? powerHint(playerCount, i + 1) : null;
+            const power = powerHint(playerCount, i + 1);
             return (
               <span
                 key={i}
@@ -267,31 +270,13 @@ function Tracks({ liberal, fascist, tracker, deckCount, playerCount }) {
 
 function powerHint(playerCount, fascistSlot) {
   // short labels for the upcoming-power markers on the fascist track
-  const k = powerKindFor(playerCount, fascistSlot);
+  const k = powerFor(playerCount, fascistSlot);
   return ({
     investigate: "INV",
     special_election: "ELEC",
     peek: "PEEK",
     execution: "KILL",
   })[k] || null;
-}
-
-function powerKindFor(playerCount, fascistCount) {
-  if (playerCount <= 6) {
-    if (fascistCount === 3) return "peek";
-    if (fascistCount === 4 || fascistCount === 5) return "execution";
-    return null;
-  }
-  if (playerCount <= 8) {
-    if (fascistCount === 2) return "investigate";
-    if (fascistCount === 3) return "special_election";
-    if (fascistCount === 4 || fascistCount === 5) return "execution";
-    return null;
-  }
-  if (fascistCount === 1 || fascistCount === 2) return "investigate";
-  if (fascistCount === 3) return "special_election";
-  if (fascistCount === 4 || fascistCount === 5) return "execution";
-  return null;
 }
 
 // Your secret role + any teammates you know about.
@@ -361,7 +346,7 @@ function PlayersRing({ players, president, chancellor, nominee, me }) {
 }
 
 // The interactive panel for the current phase.
-function PhasePanel({ view, me, send, isPresident, isChancellor, meAlive }) {
+function PhasePanel({ view, me, send, isPresident, isChancellor, meAlive, isSpectator }) {
   const {
     phase, players, president, nominee, eligibleChancellors = [],
     votedIds = [], lastVotes, pendingPower, vetoUnlocked,
@@ -399,7 +384,9 @@ function PhasePanel({ view, me, send, isPresident, isChancellor, meAlive }) {
         <div className="sh-panel-title">
           VOTE — {nameOf(president)} for President, {nameOf(nominee)} for Chancellor
         </div>
-        {!meAlive ? (
+        {isSpectator ? (
+          <div className="muted">You are spectating.</div>
+        ) : !meAlive ? (
           <div className="muted">You are executed — you cannot vote.</div>
         ) : iVoted ? (
           <div className="muted">Your vote is in. Waiting for others…</div>

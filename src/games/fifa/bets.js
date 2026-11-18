@@ -10,9 +10,9 @@
 // Returns [] when the market can't pay out — no stake on the winning side, or
 // no stake on any losing side (one-sided) — so callers send NO transaction.
 
-export function round2(n) {
-  return Math.round((n + Number.EPSILON) * 100) / 100;
-}
+import { round2 } from "../../utils/settlement.js";
+
+export { round2 };
 
 export function computeMarketNets(bets, winningOutcomeId) {
   const valid = (bets || []).filter(

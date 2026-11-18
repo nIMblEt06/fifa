@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   createInitialState,
   addPlayer,
+  removePlayer,
   setConfig,
   startGame,
   castMafiaVote,
@@ -11,10 +12,12 @@ import {
   castDetectiveCheck,
   nightActionsComplete,
   resolveNight,
+  postMafiaChat,
   castDayVote,
   dayVoteComplete,
   resolveDayVote,
   resetToLobby,
+  redactFor,
   ROLE,
   PHASE,
   SKIP,
@@ -220,24 +223,127 @@ test("win check: mafia parity with town → mafia wins", () => {
   assert.equal(s.winner, "mafia");
 });
 
-test("startGame is deterministic for the same lobby: racing clients with no explicit rng converge", () => {
+test("resetToLobby keeps the crowd + config and clears roles", () => {
   const s0 = lobbyOf(8, { mafiaCount: 2, doctorEnabled: true, detectiveEnabled: true });
-  const a = startGame(s0).state; // no rng passed — two "clients" computing from the same s0
-  const b = startGame(s0).state;
-  assert.deepEqual(a.players.map((p) => p.role), b.players.map((p) => p.role));
+  const first = startGame(s0, rngFrom(7)).state;
+  const backToLobby = resetToLobby(first).state;
+  assert.equal(backToLobby.phase, PHASE.LOBBY);
+  assert.equal(backToLobby.players.length, 8);
+  assert.ok(backToLobby.players.every((p) => p.role === null && p.alive));
+  assert.equal(backToLobby.config.mafiaCount, 2);
 });
 
-test("resetToLobby bumps gamesPlayed so a same-players replay reshuffles roles", () => {
+test("removePlayer drops a lobby seat and its order entry", () => {
+  let s = createInitialState();
+  s = addPlayer(s, "p0", "A").state;
+  s = addPlayer(s, "p1", "B").state;
+  const res = removePlayer(s, "p0");
+  assert.equal(res.state.players.length, 1);
+  assert.deepEqual(res.state.order, ["p1"]);
+  assert.ok(removePlayer(res.state, "p0").error);
+});
+
+test("day: zero votes at expiry resolves as no-lynch, never an empty revote", () => {
+  const s0 = lobbyOf(4, { mafiaCount: 1, doctorEnabled: false, detectiveEnabled: false });
+  let { state } = startGame(s0, rngFrom(6));
+  state = resolveNight(state).state;
+  const beforeAlive = alive(state).length;
+
+  const resolved = resolveDayVote(state).state;
+  assert.equal(resolved.day.voteCandidates, null, "no empty-candidate revote window");
+  assert.equal(alive(resolved).length, beforeAlive);
+  assert.equal(resolved.phase, PHASE.NIGHT);
+  assert.ok(resolved.log.some((e) => e.kind === "day_no_lynch"));
+});
+
+test("redaction: villager view hides roles, mafia chat, night actions, ballots", () => {
   const s0 = lobbyOf(8, { mafiaCount: 2, doctorEnabled: true, detectiveEnabled: true });
-  const first = startGame(s0).state;
-  const backToLobby = resetToLobby(first).state;
-  assert.equal(backToLobby.gamesPlayed, 1);
-  const second = startGame(backToLobby).state;
-  assert.notDeepEqual(
-    first.players.map((p) => p.role),
-    second.players.map((p) => p.role),
-    "replaying with identical players/settings should not reproduce the exact same role assignment"
-  );
+  let { state } = startGame(s0, rngFrom(9));
+  const mafiaIds = byRole(state, ROLE.MAFIA).map((p) => p.id);
+  const doctor = byRole(state, ROLE.DOCTOR)[0];
+  const detective = byRole(state, ROLE.DETECTIVE)[0];
+  const villager = byRole(state, ROLE.VILLAGER)[0];
+  state = castMafiaVote(state, mafiaIds[0], villager.id).state;
+  state = castDoctorSave(state, doctor.id, villager.id).state;
+  state = castDetectiveCheck(state, detective.id, mafiaIds[1]).state;
+
+  const view = redactFor(state, villager.id);
+  assert.equal(view.players.find((p) => p.id === villager.id).role, ROLE.VILLAGER);
+  assert.ok(view.players.filter((p) => p.id !== villager.id).every((p) => p.role === null));
+  assert.deepEqual(view.night, { mafiaVotes: {}, doctorSave: null, detectiveCheck: null });
+  assert.deepEqual(view.mafiaChat, []);
+  assert.ok(view.log.every((e) => e.kind !== "mafia_vote_cast"));
+  assert.deepEqual(view.day.votes, {});
+});
+
+test("redaction: mafia view sees fellow mafia, chat, and their own ballots", () => {
+  const s0 = lobbyOf(8, { mafiaCount: 2, doctorEnabled: true, detectiveEnabled: true });
+  let { state } = startGame(s0, rngFrom(9));
+  const mafiaIds = byRole(state, ROLE.MAFIA).map((p) => p.id);
+  const villager = byRole(state, ROLE.VILLAGER)[0];
+  state = castMafiaVote(state, mafiaIds[0], villager.id).state;
+  state = postMafiaChat(state, mafiaIds[0], "hit him").state;
+
+  const view = redactFor(state, mafiaIds[1]);
+  assert.ok(view.players.filter((p) => p.role === ROLE.MAFIA).length === 2);
+  assert.equal(view.night.mafiaVotes[mafiaIds[0]], villager.id);
+  assert.equal(view.mafiaChat.length, 1);
+  assert.ok(view.log.some((e) => e.kind === "mafia_vote_cast"));
+});
+
+test("redaction: doctor sees the save, detective sees the check — and nobody else's", () => {
+  const s0 = lobbyOf(8, { mafiaCount: 2, doctorEnabled: true, detectiveEnabled: true });
+  let { state } = startGame(s0, rngFrom(9));
+  const doctor = byRole(state, ROLE.DOCTOR)[0];
+  const detective = byRole(state, ROLE.DETECTIVE)[0];
+  const mafia = byRole(state, ROLE.MAFIA)[0];
+  const villager = byRole(state, ROLE.VILLAGER)[0];
+  state = castDoctorSave(state, doctor.id, villager.id).state;
+  state = castDetectiveCheck(state, detective.id, mafia.id).state;
+
+  const docView = redactFor(state, doctor.id);
+  assert.equal(docView.night.doctorSave, villager.id);
+  assert.equal(docView.night.detectiveCheck, null);
+
+  const detView = redactFor(state, detective.id);
+  assert.equal(detView.night.detectiveCheck.isMafia, true);
+  assert.equal(detView.night.doctorSave, null);
+});
+
+test("redaction: dead players' roles are public; day votes expose only who voted", () => {
+  const s0 = lobbyOf(4, { mafiaCount: 1, doctorEnabled: false, detectiveEnabled: false });
+  let { state } = startGame(s0, rngFrom(5));
+  const mafia = byRole(state, ROLE.MAFIA)[0];
+  const townIds = state.players.filter((p) => p.role !== ROLE.MAFIA).map((p) => p.id);
+  state = castMafiaVote(state, mafia.id, townIds[0]).state;
+  state = resolveNight(state).state; // townIds[0] killed, role revealed
+
+  const viewer = state.players.find((p) => p.id === townIds[1]);
+  state = castDayVote(state, viewer.id, mafia.id).state;
+
+  const view = redactFor(state, townIds[2]);
+  const dead = view.players.find((p) => p.id === townIds[0]);
+  assert.ok(dead.role !== null, "dead role always visible");
+  assert.deepEqual(view.day.votes, {}, "other ballots' targets are hidden");
+  assert.deepEqual(view.day.votedIds, [townIds[1]]);
+
+  const ownView = redactFor(state, townIds[1]);
+  assert.equal(ownView.day.votes[townIds[1]], mafia.id, "own ballot visible to its voter");
+});
+
+test("redaction: game over reveals everything to everyone", () => {
+  const s0 = lobbyOf(4, { mafiaCount: 1, doctorEnabled: false, detectiveEnabled: false });
+  let { state } = startGame(s0, rngFrom(7));
+  const mafia = byRole(state, ROLE.MAFIA)[0];
+  const others = state.players.filter((p) => p.id !== mafia.id).map((p) => p.id);
+  state = resolveNight(state).state;
+  for (const v of others) state = castDayVote(state, v, mafia.id).state;
+  state = castDayVote(state, mafia.id, others[0]).state;
+  const resolved = resolveDayVote(state).state;
+  assert.equal(resolved.winner, "town");
+
+  const view = redactFor(resolved, others[0]);
+  assert.ok(view.players.every((p) => p.role !== null));
 });
 
 console.log(`\n${passed} passed`);

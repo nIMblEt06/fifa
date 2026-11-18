@@ -4,10 +4,6 @@
 
 export { RoomDO } from "./RoomDO.js";
 import {
-  authorizeUrl, exchangeCode, getCurrentUser, getGroupMembers,
-  createSettlementExpense, signState, verifyState,
-} from "./splitwise.js";
-import {
   spotifyLogin, spotifyCallback, spotifyToken, spotifyLogout,
 } from "./spotify.js";
 import { songRecs, songRecsSync } from "./songRecs.js";
@@ -17,14 +13,6 @@ const ROUTE = /^\/api\/room\/([A-Za-z0-9-]{2,32})\/.+$/;
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-
-    // ── Splitwise OAuth (per-room: lobby creator connects their account) ──
-    if (url.pathname === "/api/splitwise/auth/start" && request.method === "GET") {
-      return splitwiseAuthStart(url, env);
-    }
-    if (url.pathname === "/api/splitwise/callback" && request.method === "GET") {
-      return splitwiseCallback(url, env);
-    }
 
     // ── Spotify OAuth (Know Your Song) ──────────────────────────────────
     if (url.pathname === "/api/spotify/login" && request.method === "GET") {
@@ -46,17 +34,6 @@ export default {
     }
     if (url.pathname === "/api/song/recs/sync" && request.method === "POST") {
       return cors(await songRecsSync(request, env));
-    }
-
-    // ── Legacy Splitwise proxy (house token via Worker secrets) ──────────
-    if (url.pathname === "/api/splitwise/group" && request.method === "GET") {
-      return cors(await splitwiseGroup(env));
-    }
-    if (url.pathname === "/api/splitwise/settle" && request.method === "POST") {
-      return cors(await splitwiseSettle(request, env));
-    }
-    if (url.pathname.startsWith("/api/splitwise/") && request.method === "OPTIONS") {
-      return cors(new Response(null, { status: 204 }));
     }
 
     // ── Hall-of-Fame: roster + tournament history (D1) ──────────
@@ -97,96 +74,6 @@ export default {
     return env.ASSETS.fetch(request);
   },
 };
-
-// ── Splitwise OAuth flow ───────────────────────────────────
-// 1. /api/splitwise/auth/start?room=CODE → 302 to Splitwise's consent page
-//    with an HMAC-signed `state` carrying the room code (CSRF-safe, stateless).
-// 2. /api/splitwise/callback?code&state → exchange the code for a token
-//    (Splitwise tokens never expire), hand it to the room's DO, bounce the
-//    browser back into the room.
-
-// Games that own a Splitwise connection. The callback bounces the browser back
-// to the right one; unknown/absent → "poker" so old cached links keep working.
-const SW_GAMES = ["poker", "fifa"];
-
-async function splitwiseAuthStart(url, env) {
-  if (!env.SPLITWISE_CLIENT_ID || !env.SPLITWISE_CLIENT_SECRET) {
-    return json({ error: "Splitwise OAuth not configured. Set SPLITWISE_CLIENT_ID and SPLITWISE_CLIENT_SECRET Worker secrets." }, 503);
-  }
-  const room = (url.searchParams.get("room") || "").toLowerCase();
-  if (!/^[a-z0-9-]{2,32}$/.test(room)) return json({ error: "Invalid room code" }, 400);
-  const gameRaw = (url.searchParams.get("game") || "poker").toLowerCase();
-  const game = SW_GAMES.includes(gameRaw) ? gameRaw : "poker";
-  const redirectUri = `${url.origin}/api/splitwise/callback`;
-  const state = await signState(env.SPLITWISE_CLIENT_SECRET, {
-    room,
-    game,
-    n: crypto.randomUUID(),
-    ts: Date.now(),
-  });
-  return Response.redirect(authorizeUrl(env.SPLITWISE_CLIENT_ID, redirectUri, state), 302);
-}
-
-async function splitwiseCallback(url, env) {
-  if (!env.SPLITWISE_CLIENT_ID || !env.SPLITWISE_CLIENT_SECRET) {
-    return json({ error: "Splitwise OAuth not configured" }, 503);
-  }
-  const payload = await verifyState(env.SPLITWISE_CLIENT_SECRET, url.searchParams.get("state"));
-  if (!payload?.room || !/^[a-z0-9-]{2,32}$/.test(payload.room)) {
-    return json({ error: "Invalid or tampered state" }, 400);
-  }
-  const game = SW_GAMES.includes(payload.game) ? payload.game : "poker";
-  const back = (suffix = "") =>
-    Response.redirect(`${url.origin}/#/r/${payload.room}/${game}${suffix}`, 302);
-  if (Date.now() - (payload.ts || 0) > 15 * 60 * 1000) return back("?sw=expired");
-
-  const code = url.searchParams.get("code");
-  if (!code) return back("?sw=denied"); // user clicked "deny" on Splitwise
-
-  try {
-    const token = await exchangeCode(env, code, `${url.origin}/api/splitwise/callback`);
-    const user = await getCurrentUser(token);
-    const id = env.ROOMS.idFromName(payload.room);
-    const res = await env.ROOMS.get(id).fetch(`https://do/api/room/${payload.room}/splitwise/connect`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, userName: user.name }),
-    });
-    if (!res.ok) return back("?sw=error");
-    return back("?sw=connected");
-  } catch (e) {
-    void e;
-    return back("?sw=error");
-  }
-}
-
-// ── Legacy house-token endpoints (kept for old cached clients) ──────────
-
-async function splitwiseGroup(env) {
-  if (!env.SPLITWISE_TOKEN || !env.SPLITWISE_GROUP_ID) {
-    return json({ error: "Splitwise not configured. Set SPLITWISE_TOKEN and SPLITWISE_GROUP_ID Worker secrets." }, 503);
-  }
-  try {
-    return json(await getGroupMembers(env.SPLITWISE_TOKEN, env.SPLITWISE_GROUP_ID));
-  } catch (e) {
-    return json({ error: e.message }, 502);
-  }
-}
-
-async function splitwiseSettle(request, env) {
-  if (!env.SPLITWISE_TOKEN || !env.SPLITWISE_GROUP_ID) {
-    return json({ error: "Splitwise not configured. Set SPLITWISE_TOKEN and SPLITWISE_GROUP_ID Worker secrets." }, 503);
-  }
-  let body;
-  try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
-  const result = await createSettlementExpense(env.SPLITWISE_TOKEN, env.SPLITWISE_GROUP_ID, {
-    description: body?.description,
-    currency: body?.currency,
-    date: body?.date,
-    participants: Array.isArray(body?.participants) ? body.participants : [],
-  });
-  return json(result, result.ok ? 200 : 400);
-}
 
 // ── Roster ─────────────────────────────────────────────────
 // Normalized name = lowercase + collapsed whitespace; used as the dedup key

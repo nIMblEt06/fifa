@@ -28,8 +28,6 @@
 //     repeat games don't repeat words). Coin-flip which of the two words is
 //     the civilian word vs the undercover word.
 //   • Civilians get word A, undercovers get word B, Mr. White gets "???".
-//   • Seat order is the player join order. Mr. White is never the FIRST
-//     describer (the start-of-round describer pointer skips him for slot 0).
 //
 // ── ROUND = DESCRIBE then VOTE ─────────────────────────────────────────
 //   DESCRIBE: in seat order, each ALIVE player types a one-line clue about
@@ -67,7 +65,6 @@ export const ROLE = {
 export const PHASE = {
   DESCRIBE: "describe",
   VOTE: "vote",
-  REVEAL: "reveal", // a vote was tallied; eliminated role shown briefly (transient bookkeeping)
   MR_WHITE_GUESS: "mrwhite_guess",
   OVER: "over",
 };
@@ -205,7 +202,6 @@ export function startGame(players, opts = {}, rng = Math.random) {
     order: players.map((p) => p.id), // seat order
     civilianWord,
     undercoverWord,
-    pairCat: opts.pair.cat || null,
     pairIndex: Number.isInteger(opts.pairIndex) ? opts.pairIndex : null,
     counts: { civilians, undercover, mrWhite },
     round: 1,
@@ -502,7 +498,6 @@ export function redactFor(state, viewerId) {
     winner: state.winner,
     survivors: state.survivors,
     counts: state.counts,
-    pairCat: state.pairCat,
     order: state.order,
     players,
     clues,

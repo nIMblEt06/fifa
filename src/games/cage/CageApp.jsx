@@ -5,7 +5,7 @@ import { useRoom } from "../../utils/useRoom";
 import {
   ARENA, GOAL_W, PLAYER_R, BALL_R, LOSE_AT, TICK_MS, DELAY_MS,
   KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_KICK,
-  SIDE_COLORS, WALLS, predictPlayer,
+  SIDE_COLORS, predictPlayer,
 } from "./engine";
 
 const INTERP_MS = 80;      // render this far behind the newest snapshot
@@ -67,6 +67,7 @@ export default function CageApp({ code, onLeave }) {
       fxRef.current = { shakeUntil: 0, flashWall: null, flashUntil: 0 };
       ballsRenderRef.current = [];
       playersRenderRef.current = {};
+      lastEventTickRef.current = -1;
     }
     if (view?.match) {
       const buf = snapsRef.current;
@@ -235,6 +236,8 @@ export default function CageApp({ code, onLeave }) {
   // ── Lobby helpers ──────────────────────────────────────────────────
   const [name, setName] = useState("");
   const [couchName, setCouchName] = useState("");
+  // Which of my seats the next wall click moves (couch owners pick).
+  const [pickIdx, setPickIdx] = useState(0);
   const [copied, setCopied] = useState(false);
   const copyLink = () => {
     navigator.clipboard?.writeText(shareUrl(code, "cage")).then(() => {
@@ -252,6 +255,7 @@ export default function CageApp({ code, onLeave }) {
     return m;
   }, [seats]);
   const sidesReady = wallsInUse.size >= 2;
+  const placeSeat = mySeats[Math.min(pickIdx, mySeats.length - 1)];
 
   const results = view?.match?.results || null;
   const lastEvent = view?.match?.events?.length ? view.match.events[view.match.events.length - 1] : null;
@@ -308,17 +312,43 @@ export default function CageApp({ code, onLeave }) {
               </div>
             )}
 
+            {joined && mySeats.length > 1 && (
+              <div className="song-chip-group">
+                <div className="song-chip-title">Wall clicks move:</div>
+                <div className="song-chips">
+                  {mySeats.map((s, i) => (
+                    <button
+                      key={s.id}
+                      className={"song-chip" + (s.id === placeSeat.id ? " on" : "")}
+                      onClick={() => setPickIdx(i)}
+                    >
+                      {s.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="cage-walls">
+              {/* role=button div so the remove button isn't nested in a <button> */}
               {[0, 1, 2, 3].map((w) => {
                 const team = wallsInUse.get(w) || [];
                 const mineHere = team.some((s) => s.owner === me);
+                const cantPick = !joined || (team.length >= 2 && !mineHere);
                 return (
-                  <button
+                  <div
                     key={w}
+                    role="button"
+                    tabIndex={cantPick ? -1 : 0}
+                    aria-disabled={cantPick}
                     className={"cage-wall-slot" + (mineHere ? " is-mine" : "") + (team.length ? " occupied" : "")}
-                    style={{ "--side": SIDE_COLORS[w] }}
-                    disabled={!joined || (team.length >= 2 && !mineHere)}
-                    onClick={() => joined && sendAction({ type: "cagePickWall", wall: w, seat: mySeats[0]?.id })}
+                    style={{ "--side": SIDE_COLORS[w], ...(cantPick && { opacity: 0.5, cursor: "not-allowed" }) }}
+                    onClick={cantPick ? undefined : () => sendAction({ type: "cagePickWall", wall: w, seat: placeSeat.id })}
+                    onKeyDown={cantPick ? undefined : (e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.preventDefault();
+                      sendAction({ type: "cagePickWall", wall: w, seat: placeSeat.id });
+                    }}
                     title="Tap to defend this goal"
                   >
                     <span className="cage-wall-name">{WALL_LABEL[w]}</span>
@@ -339,7 +369,7 @@ export default function CageApp({ code, onLeave }) {
                       </span>
                     ))}
                     {team.length === 1 && <span className="muted small">+1 slot open (2v2)</span>}
-                  </button>
+                  </div>
                 );
               })}
             </div>

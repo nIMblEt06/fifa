@@ -4,27 +4,14 @@ import { useRoom } from "../../utils/useRoom";
 import { shareUrl, clientId } from "../../utils/room";
 import {
   createInitialState,
-  addPlayer,
-  setConfig,
-  startGame,
-  postMafiaChat,
-  castMafiaVote,
-  castDoctorSave,
-  castDetectiveCheck,
-  nightActionsComplete,
-  resolveNight,
-  postDayChat,
-  castDayVote,
-  dayVoteComplete,
-  resolveDayVote,
-  resetToLobby,
+  defaultMafiaCount,
   aliveMafia,
+  validateConfig,
   ROLE,
   PHASE,
   SKIP,
   MIN_PLAYERS,
   MAX_PLAYERS,
-  validateConfig,
 } from "./engine.js";
 
 const ROLE_LABEL = {
@@ -51,45 +38,12 @@ function fmtClock(ms) {
 
 export default function MafiaApp({ code, onLeave }) {
   const me = clientId();
-  const { state: remoteState, presence, reactions, connected, sendState, sendReaction } =
-    useRoom(code, { game: "mafia" });
+  const { state: view, presence, reactions, connected, error, dismissError, sendAction, sendReaction } =
+    useRoom(code, { game: "mafia", clientId: me });
 
-  const state = { ...createInitialState(), ...(remoteState ?? {}) };
-  const stateRef = useRef(state);
-  useEffect(() => { stateRef.current = state; });
-
-  const apply = useCallback(
-    (result) => {
-      if (!result || result.error) return;
-      sendState(result.state);
-    },
-    [sendState]
-  );
-
-  const update = useCallback(
-    (fn) => {
-      const base = { ...createInitialState(), ...(remoteState ?? {}) };
-      apply(fn(base));
-    },
-    [remoteState, apply]
-  );
-
-  // No one is in charge — any connected client watches the clock/action
-  // completion and drives the phase forward the instant it's resolvable.
-  useEffect(() => {
-    const id = setInterval(() => {
-      const s = stateRef.current;
-      if (!s || s.phase === PHASE.LOBBY || s.phase === PHASE.OVER) return;
-      const now = Date.now();
-      const expired = s.phaseEndsAt != null && now >= s.phaseEndsAt;
-      if (s.phase === PHASE.NIGHT) {
-        if (nightActionsComplete(s) || expired) apply(resolveNight(s));
-      } else if (s.phase === PHASE.DAY) {
-        if (dayVoteComplete(s) || expired) apply(resolveDayVote(s));
-      }
-    }, 500);
-    return () => clearInterval(id);
-  }, [apply]);
+  // Server-authoritative snapshot (per-viewer redacted). Null only while the
+  // first snapshot is in flight — fall back to the engine's empty lobby.
+  const state = view ?? createInitialState();
 
   const [name, setName] = useState("");
   const [copied, setCopied] = useState(false);
@@ -100,16 +54,28 @@ export default function MafiaApp({ code, onLeave }) {
     });
   };
 
+  // Re-bind this WS to our clientId after a refresh/reconnect.
+  const rejoinedRef = useRef(false);
+  useEffect(() => {
+    if (!connected) { rejoinedRef.current = false; return; }
+    if (rejoinedRef.current) return;
+    const known = state.players.find((p) => p.id === me);
+    if (known?.name) {
+      rejoinedRef.current = true;
+      sendAction({ type: "join", name: known.name });
+    }
+  }, [connected, state.players, me, sendAction]);
+
   const seated = !!state.players.find((p) => p.id === me);
   const handleJoin = () => {
     const n = name.trim();
     if (!n) return;
-    update((s) => addPlayer(s, me, n));
+    sendAction({ type: "join", name: n });
   };
 
   const handleReset = () => {
     if (!window.confirm("Return everyone to the lobby for a new game?")) return;
-    update((s) => resetToLobby(s));
+    sendAction({ type: "mf_reset" });
   };
 
   const over = state.phase === PHASE.OVER;
@@ -145,6 +111,13 @@ export default function MafiaApp({ code, onLeave }) {
 
       {!connected && <div className="conn-state">RECONNECTING…</div>}
 
+      {error && (
+        <div className="error-toast" role="alert" onClick={dismissError}>
+          <span className="error-toast-msg">{error.message}</span>
+          <button className="error-toast-x" aria-label="Dismiss">×</button>
+        </div>
+      )}
+
       <main>
         {state.phase === PHASE.LOBBY && (
           <Lobby
@@ -154,8 +127,9 @@ export default function MafiaApp({ code, onLeave }) {
             joined={seated}
             state={state}
             me={me}
-            onSetConfig={(patch) => update((s) => setConfig(s, patch))}
-            onStart={() => update((s) => startGame(s))}
+            onSetConfig={(patch) => sendAction({ type: "mf_config", patch })}
+            onLeaveSeat={() => sendAction({ type: "mf_leave" })}
+            onStart={() => sendAction({ type: "mf_start" })}
           />
         )}
 
@@ -163,12 +137,12 @@ export default function MafiaApp({ code, onLeave }) {
           <Game
             state={state}
             me={me}
-            onMafiaChat={(text) => update((s) => postMafiaChat(s, me, text))}
-            onMafiaVote={(targetId) => update((s) => castMafiaVote(s, me, targetId))}
-            onDoctorSave={(targetId) => update((s) => castDoctorSave(s, me, targetId))}
-            onDetectiveCheck={(targetId) => update((s) => castDetectiveCheck(s, me, targetId))}
-            onDayChat={(text) => update((s) => postDayChat(s, me, text))}
-            onDayVote={(targetId) => update((s) => castDayVote(s, me, targetId))}
+            onMafiaChat={(text) => sendAction({ type: "mf_mafiaChat", text })}
+            onMafiaVote={(targetId) => sendAction({ type: "mf_mafiaVote", targetId })}
+            onDoctorSave={(targetId) => sendAction({ type: "mf_doctorSave", targetId })}
+            onDetectiveCheck={(targetId) => sendAction({ type: "mf_detectiveCheck", targetId })}
+            onDayChat={(text) => sendAction({ type: "mf_dayChat", text })}
+            onDayVote={(targetId) => sendAction({ type: "mf_dayVote", targetId })}
           />
         )}
 
@@ -181,15 +155,26 @@ export default function MafiaApp({ code, onLeave }) {
 }
 
 // ── LOBBY ────────────────────────────────────────────────────────────────
-function Lobby({ name, setName, onJoin, joined, state, me, onSetConfig, onStart }) {
+function Lobby({ name, setName, onJoin, joined, state, me, onSetConfig, onLeaveSeat, onStart }) {
   const players = state.players;
   const n = players.length;
   const config = state.config;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mafiaTouched, setMafiaTouched] = useState(false);
   const err = validateConfig(n, config);
   const canStart = n >= MIN_PLAYERS && n <= MAX_PLAYERS && !err;
 
-  const bumpMafia = (delta) => onSetConfig({ mafiaCount: Math.max(1, config.mafiaCount + delta) });
+  // Follow the player count until someone steers the mafia stepper by hand.
+  useEffect(() => {
+    if (!mafiaTouched && config.mafiaCount !== defaultMafiaCount(n)) {
+      onSetConfig({ mafiaCount: defaultMafiaCount(n) });
+    }
+  }, [mafiaTouched, n, config.mafiaCount, onSetConfig]);
+
+  const bumpMafia = (delta) => {
+    setMafiaTouched(true);
+    onSetConfig({ mafiaCount: Math.max(1, config.mafiaCount + delta) });
+  };
   const bumpSeconds = (key, delta) => onSetConfig({ [key]: Math.max(15, config[key] + delta) });
 
   return (
@@ -216,7 +201,12 @@ function Lobby({ name, setName, onJoin, joined, state, me, onSetConfig, onStart 
         {players.map((p) => (
           <div key={p.id} className="seated-row">
             <span>{p.name}</span>
-            {p.id === me && <span className="muted"> (you)</span>}
+            {p.id === me && (
+              <>
+                <span className="muted"> (you)</span>
+                <button className="remove-btn" onClick={onLeaveSeat} aria-label="Leave">×</button>
+              </>
+            )}
           </div>
         ))}
       </div>
@@ -299,19 +289,17 @@ function TimerStepper({ label, seconds, onBump }) {
 // ── IN GAME ──────────────────────────────────────────────────────────────
 function Game({ state, me, onMafiaChat, onMafiaVote, onDoctorSave, onDetectiveCheck, onDayChat, onDayVote }) {
   const you = state.players.find((p) => p.id === me) || null;
+  // Shown once per deal: Game remounts on every fresh start (lobby unmount).
   const [roleAck, setRoleAck] = useState(false);
-  const prevPhaseRef = useRef(state.phase);
-  useEffect(() => {
-    if (prevPhaseRef.current === PHASE.LOBBY && state.phase !== PHASE.LOBBY) setRoleAck(false);
-    prevPhaseRef.current = state.phase;
-  }, [state.phase]);
 
-  const [now, setNow] = useState(Date.now());
+  // Countdown clock: low-rate re-render driver (house pattern from ChickenApp).
+  const [, setClockTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 250);
+    const id = setInterval(() => setClockTick((t) => t + 1), 250);
     return () => clearInterval(id);
   }, []);
-  const remaining = state.phaseEndsAt != null ? state.phaseEndsAt - now : null;
+  const now = useCallback(() => Date.now(), []);
+  const remaining = state.phaseEndsAt != null ? state.phaseEndsAt - now() : null;
 
   if (you && !roleAck) {
     return <RoleReveal you={you} onAck={() => setRoleAck(true)} />;
@@ -495,7 +483,9 @@ function DoctorPanel({ state, you, onDoctorSave }) {
     <div className="uc-panel">
       <div className="set-status">
         {picked ? (
-          <span>Protecting <strong>{targets.find((p) => p.id === picked)?.name}</strong> tonight.</span>
+          <span>
+            Protecting <strong>{targets.find((p) => p.id === picked)?.name}</strong> tonight — pick again to change.
+          </span>
         ) : (
           <strong>DOCTOR — choose who to protect</strong>
         )}
@@ -505,7 +495,6 @@ function DoctorPanel({ state, you, onDoctorSave }) {
           <button
             key={p.id}
             className={"opponent" + (picked === p.id ? " selected" : "")}
-            disabled={!!picked}
             onClick={() => onDoctorSave(p.id)}
           >
             <div className="opponent-name">{p.name}{p.id === you.id && " (you)"}</div>
@@ -525,21 +514,23 @@ function DetectivePanel({ state, you, onDetectiveCheck }) {
         {check ? (
           <span>
             <strong>{state.players.find((p) => p.id === check.target)?.name}</strong> is{" "}
-            <strong>{check.isMafia ? "MAFIA" : "not mafia"}</strong>.
+            <strong>{check.isMafia ? "MAFIA" : "not mafia"}</strong> — pick again to re-check.
           </span>
         ) : (
           <strong>DETECTIVE — choose who to investigate</strong>
         )}
       </div>
-      {!check && (
-        <div className="opponent-row">
-          {targets.map((p) => (
-            <button key={p.id} className="opponent" onClick={() => onDetectiveCheck(p.id)}>
-              <div className="opponent-name">{p.name}</div>
-            </button>
-          ))}
-        </div>
-      )}
+      <div className="opponent-row">
+        {targets.map((p) => (
+          <button
+            key={p.id}
+            className={"opponent" + (check?.target === p.id ? " selected" : "")}
+            onClick={() => onDetectiveCheck(p.id)}
+          >
+            <div className="opponent-name">{p.name}</div>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -589,7 +580,7 @@ function DayPanel({ state, you, onDayChat, onDayVote }) {
 
 function DayVote({ state, you, onDayVote }) {
   if (!you || !you.alive) {
-    const votedCount = Object.keys(state.day.votes).length;
+    const votedCount = state.day.votedIds.length;
     const aliveCount = state.players.filter((p) => p.alive).length;
     return (
       <div className="set-status">
@@ -685,8 +676,9 @@ function LastEvent({ state, me }) {
 function GameOver({ state, me, onPlayAgain }) {
   const { winner, players } = state;
   const myRole = players.find((p) => p.id === me)?.role;
-  const iWon =
-    (winner === "town" && myRole !== ROLE.MAFIA) || (winner === "mafia" && myRole === ROLE.MAFIA);
+  // Spectators (myRole == null) never get a personal "You won".
+  const iWon = myRole != null &&
+    ((winner === "town" && myRole !== ROLE.MAFIA) || (winner === "mafia" && myRole === ROLE.MAFIA));
 
   return (
     <div className="winner-wrap">

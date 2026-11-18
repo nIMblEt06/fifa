@@ -173,6 +173,8 @@ Pulls from TheSportsDB into `public/teams.json`. Edit the `LEAGUES` array in `sc
 npm run build      # production build → dist/client + dist/fifa_tournament
 npm run preview    # preview built app (no Worker)
 npm run lint       # eslint
+npm run test       # every game engine suite (node --test)
+npm run smoke      # end-to-end mafia room over real WebSockets (run `npm run dev` first)
 ```
 
 ## Design notes

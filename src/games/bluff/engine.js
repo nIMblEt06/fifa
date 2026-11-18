@@ -24,9 +24,14 @@
 //   • GOING OUT: emptying your hand makes you provisionally out — but your
 //     final play can still be bluff-called by the next player(s). If that
 //     play was a lie you pick up the pile and you're back in. Players who
-//     go out (and stay out) are ranked in finish order.
-//   • Game ends when ≤1 player still holds cards. The last player holding
-//     cards is the loser ("el crapico").
+//     go out (and stay out) are ranked in the order they emptied.
+//   • FINAL CHALLENGE WINDOW: when a play leaves exactly one player
+//     holding cards, the game stays open so that holder can act on it —
+//     call the bluff (resolved as above), or pass to burn and end the
+//     game with themselves as the loser.
+//   • Game ends when one holder remains with no challengeable final play
+//     (or everyone has emptied — then the last to empty is the loser).
+//     The last holder is the loser ("el crapico").
 //
 // Redaction (see redactFor):
 //   • A viewer sees their own hand; for everyone else only hand counts.
@@ -98,7 +103,8 @@ export function startGame(players, _opts = {}, rng = Math.random) {
     out: [],                  // finish order: player ids that have emptied out
     log: [{ t: Date.now(), kind: "start", players: players.map((p) => p.id) }],
     loser: null,              // set when the game ends (last with cards)
-    winner: null,             // first to go out — present for UI parity
+    outSeq: 0,                // counter stamping the order hands empty
+    emptyAt: {},              // player id → outSeq stamp taken when emptied
   };
   return state;
 }
@@ -160,10 +166,11 @@ export function applyPlay(state, fromId, cards, claimRank) {
     if (!RANKS.includes(claimRank)) return { error: "Choose a rank to declare" };
     claim = claimRank;
   }
-  if (cards.length > hand.length) return { error: "You can't play more cards than you hold" };
 
   const next = structuredClone(state);
   next.hands[fromId] = hand.filter((c) => !seen.has(c));
+  // Stamp the emptying order (finish rank), overwriting any pre-revival stamp.
+  if (next.hands[fromId].length === 0) next.emptyAt[fromId] = next.outSeq++;
   next.pile.push(...cards);
   next.claimRank = claim;
   next.lastPlay = { by: fromId, cards: [...cards], count: cards.length, claim };
@@ -297,13 +304,16 @@ function resetRound(state) {
 }
 
 // Commit any provisionally-out player (emptied hand, play no longer
-// challengeable because the round ended) to the finish order.
+// challengeable because the round ended) to the finish order, in the
+// order they emptied rather than seat order.
 function finalizeProvisionalOuts(state) {
-  for (const p of state.players) {
-    if (state.hands[p.id].length === 0 && !state.out.includes(p.id)) {
-      state.out.push(p.id);
-      state.log.push({ t: Date.now(), kind: "out", who: p.id, place: state.out.length });
-    }
+  // Unstamped (pre-outSeq) states keep seat order via the stable sort.
+  const pending = state.players
+    .filter((p) => state.hands[p.id].length === 0 && !state.out.includes(p.id))
+    .sort((a, b) => (state.emptyAt[a.id] ?? Infinity) - (state.emptyAt[b.id] ?? Infinity));
+  for (const p of pending) {
+    state.out.push(p.id);
+    state.log.push({ t: Date.now(), kind: "out", who: p.id, place: state.out.length });
   }
 }
 
@@ -321,33 +331,35 @@ function ensureTurnPlayable(state) {
 
 function maybeFinish(state) {
   const stillIn = canActIds(state);
-  if (stillIn.length <= 1) {
-    // Game over: at most one player holds cards. Anyone with an empty hand
-    // who isn't recorded yet finishes now; the last holder is the loser.
-    const holders = state.players.map((p) => p.id).filter((id) => state.hands[id].length > 0);
-    if (holders.length === 1) {
-      // The single remaining card-holder is the loser; finalize everyone else.
-      finalizeProvisionalOuts(state);
-      state.loser = holders[0];
-    } else {
-      // 0 holders (a rare all-burn finish): the last player to go out loses.
-      finalizeProvisionalOuts(state);
-      state.loser = state.out[state.out.length - 1] ?? null;
-    }
-    // First player in `out` is the overall winner (for UI flavor).
-    state.winner = state.out[0] ?? null;
-    state.turn = null;
+  if (stillIn.length > 1) return;
+  // Final challenge window: one holder left, and the last play was by a
+  // player who just emptied. Stay open so the holder can call or decline.
+  if (stillIn.length === 1 && state.lastPlay && state.hands[state.lastPlay.by].length === 0) {
+    state.turn = stillIn[0];
+    return;
   }
+  // Game over: at most one player holds cards. Anyone with an empty hand
+  // who isn't recorded yet finishes now; the last holder is the loser.
+  const holders = state.players.map((p) => p.id).filter((id) => state.hands[id].length > 0);
+  if (holders.length === 1) {
+    // The single remaining card-holder is the loser; finalize everyone else.
+    finalizeProvisionalOuts(state);
+    state.loser = holders[0];
+  } else {
+    // 0 holders (the last holder played their final cards too): the last
+    // player to empty is the loser.
+    finalizeProvisionalOuts(state);
+    state.loser = state.out[state.out.length - 1];
+  }
+  state.turn = null;
 }
 
 // Build a per-player redacted view of the state.
 export function redactFor(state, viewerId) {
   if (!state) return null;
-  // Strip hidden card data from log events; keep bluff reveals public.
-  const recent = state.log.slice(-30).map((e) => {
-    if (e.kind === "bluff") return e; // revealed cards are intentionally public
-    return e;                          // play/pass/burn/out carry no card data
-  });
+  // Log events carry no hidden card data by construction: play/pass/burn/out
+  // log counts and claims only; bluff reveals are public by design.
+  const recent = state.log.slice(-30);
 
   const players = state.players.map((p) => ({
     id: p.id,
@@ -377,10 +389,8 @@ export function redactFor(state, viewerId) {
     lastPlay: lastPlayPublic,
     pileCount: state.pile.length,
     burnedCount: state.burned?.length ?? 0,
-    passes: state.passes,
     out: [...state.out],
     loser: state.loser,
-    winner: state.winner,
     log: recent,
   };
 }

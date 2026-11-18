@@ -52,7 +52,7 @@ export default function ChickenApp({ code, onLeave }) {
   }, [connected, sendAction]);
 
   const phase = view?.phase || "lobby";
-  const seats = view?.seats || [];
+  const seats = useMemo(() => view?.seats || [], [view]);
   const race = view?.race || null;
   const raceStartAt = view?.raceStartAt || null;
   const mySeats = useMemo(() => seats.filter((s) => s.owner === me), [seats, me]);

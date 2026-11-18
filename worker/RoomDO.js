@@ -4,7 +4,6 @@ import {
   createTable, startHand, applyAction, addChips, setSittingOut,
   seatPlayer, cashOutPlayer, canStartHand, redactFor as redactPoker,
 } from "../src/games/poker/engine.js";
-import { getGroups, getGroupMembers, createSettlementExpense } from "./splitwise.js";
 import {
   startGame as startBluff,
   applyPlay as applyBluffPlay,
@@ -12,6 +11,7 @@ import {
   applyBluff as applyBluffCall,
   redactFor as redactBluff,
   healState as healBluff,
+  MAX_PLAYERS as BLUFF_MAX_PLAYERS,
 } from "../src/games/bluff/engine.js";
 import * as Hitler from "../src/games/hitler/engine.js";
 import {
@@ -24,6 +24,7 @@ import {
   validateRoleCounts as ucValidateRoleCounts,
 } from "../src/games/undercover/engine.js";
 import { WORD_PAIRS as UC_WORD_PAIRS } from "../src/games/undercover/wordpairs.js";
+import * as Mafia from "../src/games/mafia/engine.js";
 import {
   createRace, simTick as chickenSimTick, applyLunge as chickenApplyLunge,
   snapshot as chickenSnapshot,
@@ -53,15 +54,11 @@ import {
 export class RoomDO extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
-    const m = url.pathname.match(/^\/api\/room\/[A-Za-z0-9-]{2,32}\/(state|reaction|presence|ws|splitwise(?:\/[a-z]+)?)\/?$/);
+    const m = url.pathname.match(/^\/api\/room\/[A-Za-z0-9-]{2,32}\/(state|reaction|presence|ws)\/?$/);
     const action = m ? m[1].toLowerCase() : null;
 
     if (request.method === "OPTIONS") {
       return cors(new Response(null, { status: 204 }));
-    }
-
-    if (action && action.startsWith("splitwise")) {
-      return cors(await this.handleSplitwise(action, request));
     }
 
     if (action === "state") {
@@ -135,6 +132,9 @@ export class RoomDO extends DurableObject {
       } else if (gameType === "undercover") {
         const payload = buildUndercoverSnapshot(state, /* viewerId */ null);
         try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+      } else if (gameType === "mafia") {
+        const payload = buildMafiaSnapshot(state, /* viewerId */ null);
+        try { server.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
       } else if (state) {
         // Client-authoritative games (FIFA, Poker, …): relay the raw blob.
         try { server.send(JSON.stringify({ type: "state", data: state })); } catch (_e) { void _e; }
@@ -156,7 +156,7 @@ export class RoomDO extends DurableObject {
     if (!msg || typeof msg !== "object") return;
 
     if (msg.type === "join") {
-      // { type: "join", game: "lit"|"poker", clientId, name, memberId? }
+      // { type: "join", game: "lit"|"poker", clientId, name }
       const game = msg.game || "lit";
       ws.serializeAttachment({ clientId: msg.clientId, name: msg.name, game });
       if (game === "poker") {
@@ -164,11 +164,11 @@ export class RoomDO extends DurableObject {
         return;
       }
       if (game === "chicken") {
-        await this.handleChickenJoin(msg);
+        await this.handleChickenJoin(ws, msg);
         return;
       }
       if (game === "cage") {
-        await this.handleCageJoin(msg);
+        await this.handleCageJoin(ws, msg);
         return;
       }
       if (game === "undercover") {
@@ -223,7 +223,10 @@ export class RoomDO extends DurableObject {
           state.lobby = state.lobby || [];
           const existing = state.lobby.find((p) => p.id === msg.clientId);
           if (existing) existing.name = msg.name;
-          else state.lobby.push({ id: msg.clientId, name: msg.name });
+          else if (state.lobby.length < BLUFF_MAX_PLAYERS) state.lobby.push({ id: msg.clientId, name: msg.name });
+          else {
+            try { ws.send(JSON.stringify({ type: "error", message: `At most ${BLUFF_MAX_PLAYERS} players` })); } catch (_e) { void _e; }
+          }
           dirty = true;
         }
         // Self-heal in-flight games (advance a stuck turn if needed).
@@ -248,6 +251,8 @@ export class RoomDO extends DurableObject {
         }
         if (dirty) await this.ctx.storage.put("state", state);
         await this.broadcastHitlerState();
+      } else if (game === "mafia") {
+        await this.handleMafiaJoin(ws, msg);
       }
       return;
     }
@@ -270,6 +275,12 @@ export class RoomDO extends DurableObject {
     // ── Secret Hitler actions ───────────────────────────────────────────
     if (msg.type?.startsWith("hitler:")) {
       await this.handleHitlerAction(ws, msg);
+      return;
+    }
+
+    // ── Mafia actions ───────────────────────────────────────────────────
+    if (msg.type?.startsWith("mf_")) {
+      await this.handleMafiaMessage(ws, msg);
       return;
     }
 
@@ -549,11 +560,8 @@ export class RoomDO extends DurableObject {
   // Room state shape (storage key "state"):
   //   { gameType: "poker", v: 2, phase: "lobby"|"playing"|"results",
   //     config: { ratio: {chips, money}, sb, bb, currency },
-  //     lobby: [{ id, name, memberId }],
-  //     table: <engine table> | null,
-  //     splitwise: { connected, via, userName, groupId, groupName, members } }
-  // The Splitwise OAuth token lives in a SEPARATE storage key ("swToken")
-  // so it can never leak through a state broadcast.
+  //     lobby: [{ id, name }],
+  //     table: <engine table> | null }
 
   async ensurePokerState() {
     let state = await this.ctx.storage.get("state");
@@ -565,13 +573,8 @@ export class RoomDO extends DurableObject {
         config: { ratio: { chips: 5000, money: 250 }, sb: 25, bb: 50, currency: "INR" },
         lobby: [],
         table: null,
-        splitwise: { connected: false },
       };
     }
-    // Mirror the canonical, game-agnostic Splitwise connection (storage key
-    // "swConfig", env fallback included) into the poker snapshot so PokerApp
-    // keeps reading `view.splitwise` unchanged.
-    state.splitwise = await this.splitwiseConfig();
     await this.ctx.storage.put("state", state);
     return state;
   }
@@ -579,15 +582,11 @@ export class RoomDO extends DurableObject {
   async handlePokerJoin(msg) {
     const state = await this.ensurePokerState();
     if (msg.name && msg.clientId) {
-      const player = { id: msg.clientId, name: String(msg.name).slice(0, 32), memberId: msg.memberId ?? null };
+      const player = { id: msg.clientId, name: String(msg.name).slice(0, 32) };
       if (state.phase === "lobby") {
         const existing = state.lobby.find((p) => p.id === player.id);
-        if (existing) {
-          existing.name = player.name;
-          if (msg.memberId !== undefined) existing.memberId = player.memberId;
-        } else {
-          state.lobby.push(player);
-        }
+        if (existing) existing.name = player.name;
+        else state.lobby.push(player);
       } else if (state.phase === "playing" && state.table) {
         // Late joiner buys in for one standard stack; dealt in next hand.
         const seated = state.table.seats.some((s) => s.id === player.id) ||
@@ -721,7 +720,7 @@ export class RoomDO extends DurableObject {
         for (const s of [...(state.table?.seats || []), ...(state.table?.cashedOut || []), ...(state.lobby || [])]) {
           if (seen.has(s.id)) continue;
           seen.add(s.id);
-          lobby.push({ id: s.id, name: s.name, memberId: s.memberId ?? null });
+          lobby.push({ id: s.id, name: s.name });
         }
         state.phase = "lobby";
         state.lobby = lobby;
@@ -745,139 +744,6 @@ export class RoomDO extends DurableObject {
       const payload = buildPokerSnapshot(state, viewerId);
       try { ws.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
     }
-  }
-
-  // The canonical, game-agnostic Splitwise connection. Stored under "swConfig"
-  // (token lives separately under the secret "swToken"). Falls back to the
-  // legacy SPLITWISE_TOKEN/SPLITWISE_GROUP_ID Worker secrets when present so old
-  // rooms keep working with zero re-auth. Never touches the game "state" key, so
-  // it's safe for both client-authoritative (FIFA) and server-authoritative
-  // (poker) rooms.
-  async splitwiseConfig() {
-    const cfg = await this.ctx.storage.get("swConfig");
-    if (cfg) return cfg;
-    if (this.env.SPLITWISE_TOKEN && this.env.SPLITWISE_GROUP_ID) {
-      return {
-        connected: true,
-        via: "env",
-        userName: "house account",
-        groupId: Number(this.env.SPLITWISE_GROUP_ID),
-        groupName: null,
-        members: null,
-      };
-    }
-    return { connected: false };
-  }
-
-  async splitwiseToken() {
-    return (await this.ctx.storage.get("swToken")) || this.env.SPLITWISE_TOKEN || null;
-  }
-
-  // Persist a new connection config, then notify everyone. Poker rooms get it
-  // mirrored into their snapshot (PokerApp reads `view.splitwise`); every client
-  // (FIFA included) also receives a lightweight `splitwise` event.
-  async putSplitwiseConfig(cfg) {
-    await this.ctx.storage.put("swConfig", cfg);
-    const raw = await this.ctx.storage.get("state");
-    if (raw?.gameType === "poker" && raw.v === 2) {
-      raw.splitwise = cfg;
-      await this.ctx.storage.put("state", raw);
-      await this.broadcastPokerState();
-    }
-    this.broadcast({ type: "splitwise", data: cfg });
-  }
-
-  // Room-scoped Splitwise endpoints. Used by both poker and FIFA.
-  async handleSplitwise(action, request) {
-    const sub = action.split("/")[1] || "status";
-
-    // Internal hand-off from the Worker's OAuth callback.
-    if (sub === "connect" && request.method === "POST") {
-      let body;
-      try { body = await request.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
-      if (!body?.token) return json({ error: "token required" }, 400);
-      await this.ctx.storage.put("swToken", body.token);
-      await this.putSplitwiseConfig({
-        connected: true,
-        via: "oauth",
-        userName: body.userName || null,
-        groupId: null,
-        groupName: null,
-        members: null,
-      });
-      return json({ ok: true });
-    }
-
-    if (sub === "disconnect" && request.method === "POST") {
-      await this.ctx.storage.delete("swToken");
-      await this.ctx.storage.delete("swConfig");
-      await this.putSplitwiseConfig(await this.splitwiseConfig());
-      return json({ ok: true });
-    }
-
-    // Read-only — safe to hit from any room/game.
-    if (sub === "status" && request.method === "GET") {
-      return json(await this.splitwiseConfig());
-    }
-
-    const token = await this.splitwiseToken();
-    if (!token) return json({ error: "Splitwise not connected. Whoever runs the books should hit Connect Splitwise." }, 503);
-    const cfg = await this.splitwiseConfig();
-
-    if (sub === "groups" && request.method === "GET") {
-      try {
-        const groups = await getGroups(token);
-        return json(groups.map((g) => ({ id: g.id, name: g.name, memberCount: g.members.length })));
-      } catch (e) {
-        return json({ error: e.message }, 502);
-      }
-    }
-
-    if (sub === "group" && request.method === "POST") {
-      let body;
-      try { body = await request.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
-      const groupId = Number(body?.groupId);
-      if (!groupId) return json({ error: "groupId required" }, 400);
-      try {
-        const groups = await getGroups(token);
-        const group = groups.find((g) => g.id === groupId);
-        const members = group?.members ?? (await getGroupMembers(token, groupId));
-        const next = { ...cfg, connected: true, groupId, groupName: group?.name ?? null, members };
-        await this.putSplitwiseConfig(next);
-        return json({ ok: true, groupId, groupName: next.groupName, members });
-      } catch (e) {
-        return json({ error: e.message }, 502);
-      }
-    }
-
-    if (sub === "members" && request.method === "GET") {
-      const groupId = cfg.groupId;
-      if (!groupId) return json({ error: "No group selected" }, 400);
-      if (cfg.members) return json(cfg.members);
-      try {
-        const members = await getGroupMembers(token, groupId);
-        await this.putSplitwiseConfig({ ...cfg, members });
-        return json(members);
-      } catch (e) {
-        return json({ error: e.message }, 502);
-      }
-    }
-
-    if (sub === "settle" && request.method === "POST") {
-      const groupId = cfg.groupId;
-      if (!groupId) return json({ error: "No Splitwise group selected" }, 400);
-      let body;
-      try { body = await request.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
-      const result = await createSettlementExpense(token, groupId, {
-        description: body?.description,
-        currency: body?.currency || cfg.currency || "INR",
-        date: body?.date,
-        participants: Array.isArray(body?.participants) ? body.participants : [],
-      });
-      return json(result, result.ok ? 200 : 502);
-    }
-
-    return json({ error: "Not found" }, 404);
   }
 
   // ── UNDERCOVER helpers ────────────────────────────────────────────────
@@ -938,13 +804,15 @@ export class RoomDO extends DurableObject {
     return state;
   }
 
-  async handleChickenJoin(msg) {
+  async handleChickenJoin(ws, msg) {
     const state = await this.ensureChickenState();
     if (msg.name && msg.clientId && state.phase === "lobby") {
       const existing = state.seats.find((s) => s.id === msg.clientId);
       if (existing) existing.name = String(msg.name).slice(0, 24);
       else if (state.seats.length < CK_MAX_LANES) {
         state.seats.push({ id: msg.clientId, name: String(msg.name).slice(0, 24), owner: msg.clientId });
+      } else {
+        try { ws.send(JSON.stringify({ type: "error", message: `Max ${CK_MAX_LANES} chickens` })); } catch (_e) { void _e; }
       }
       await this.ctx.storage.put("state", state);
     }
@@ -1110,6 +978,14 @@ export class RoomDO extends DurableObject {
       if (state.phase === "playing") {
         await this.ctx.storage.setAlarm(Date.now() + 1000);
       }
+    } else if (state?.gameType === "mafia" && state.game) {
+      // Phase timer expired (or fired early) — resolve what's due, else re-arm.
+      const g = state.game;
+      const due =
+        (g.phase === Mafia.PHASE.NIGHT || g.phase === Mafia.PHASE.DAY) &&
+        g.phaseEndsAt != null && Date.now() >= g.phaseEndsAt - 500;
+      if (due) await this.advanceMafiaPhase(state);
+      else await this.armMafiaAlarm(g);
     }
   }
 
@@ -1173,7 +1049,7 @@ export class RoomDO extends DurableObject {
     return best;
   }
 
-  async handleCageJoin(msg) {
+  async handleCageJoin(ws, msg) {
     const state = await this.ensureCageState();
     if (msg.name && msg.clientId && state.phase === "lobby") {
       const existing = state.seats.find((s) => s.id === msg.clientId);
@@ -1182,6 +1058,8 @@ export class RoomDO extends DurableObject {
         const wall = this.cageAutoWall(state);
         if (wall !== null) {
           state.seats.push({ id: msg.clientId, name: String(msg.name).slice(0, 24), owner: msg.clientId, wall });
+        } else {
+          try { ws.send(JSON.stringify({ type: "error", message: "Cage is full" })); } catch (_e) { void _e; }
         }
       }
       await this.ctx.storage.put("state", state);
@@ -1287,7 +1165,7 @@ export class RoomDO extends DurableObject {
 
   // Advance the authoritative match up to (now − DELAY_MS); inputs land at
   // the tick they were pressed. Persist every advance (storage.get clones);
-  // broadcast at ~15Hz.
+  // broadcast at ~30Hz.
   async advanceCageMatch(state) {
     if (state.phase === "playing" && state.match && !state.match.results) {
       const targetTick = Math.min(
@@ -1436,6 +1314,177 @@ export class RoomDO extends DurableObject {
     await this.broadcastHitlerState();
   }
 
+  // ── Mafia helpers ────────────────────────────────────────────────────
+  //
+  // Room state (storage "state"):
+  //   { gameType: "mafia", lobby: [{ id, name }], config, game: <engine state>|null }
+  // The engine state holds players with roles; every socket receives a
+  // per-viewer redactFor view, so the roster/mafia chat/night actions never
+  // leave the DO. Phase timers are driven by the DO alarm.
+
+  async ensureMafiaState() {
+    let state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "mafia") {
+      state = { gameType: "mafia", lobby: [], config: { ...Mafia.DEFAULT_CONFIG }, game: null };
+      await this.ctx.storage.put("state", state);
+    }
+    return state;
+  }
+
+  async handleMafiaJoin(ws, msg) {
+    const state = await this.ensureMafiaState();
+    if (msg.name && msg.clientId) {
+      // Seats are claimable only pre-start; mid-game joins are spectators.
+      if (!state.game) {
+        const existing = state.lobby.find((p) => p.id === msg.clientId);
+        if (existing) existing.name = String(msg.name).slice(0, 24);
+        else if (state.lobby.length < Mafia.MAX_PLAYERS) {
+          state.lobby.push({ id: msg.clientId, name: String(msg.name).slice(0, 24) });
+        } else {
+          try { ws.send(JSON.stringify({ type: "error", message: `At most ${Mafia.MAX_PLAYERS} players` })); } catch (_e) { void _e; }
+        }
+        await this.ctx.storage.put("state", state);
+      }
+    }
+    await this.broadcastMafiaState();
+  }
+
+  async handleMafiaMessage(ws, msg) {
+    const fail = (message) => {
+      try { ws.send(JSON.stringify({ type: "error", message })); } catch (_e) { void _e; }
+    };
+    let att = null;
+    try { att = ws.deserializeAttachment(); } catch { /* none */ }
+    const me = att?.clientId;
+
+    const state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "mafia") return;
+
+    // Lobby-level actions need no seat.
+    if (msg.type === "mf_config") {
+      if (state.game) return fail("Can't change settings mid-game");
+      const c = state.config;
+      const patch = msg.patch || {};
+      const num = (v, min) => Math.max(min, Math.floor(Number(v) || 0));
+      state.config = {
+        ...c,
+        mafiaCount: patch.mafiaCount != null ? num(patch.mafiaCount, 1) : c.mafiaCount,
+        doctorEnabled: patch.doctorEnabled != null ? !!patch.doctorEnabled : c.doctorEnabled,
+        detectiveEnabled: patch.detectiveEnabled != null ? !!patch.detectiveEnabled : c.detectiveEnabled,
+        nightSeconds: patch.nightSeconds != null ? num(patch.nightSeconds, 15) : c.nightSeconds,
+        daySeconds: patch.daySeconds != null ? num(patch.daySeconds, 15) : c.daySeconds,
+        revoteSeconds: patch.revoteSeconds != null ? num(patch.revoteSeconds, 15) : c.revoteSeconds,
+      };
+      await this.ctx.storage.put("state", state);
+      await this.broadcastMafiaState();
+      return;
+    }
+    if (msg.type === "mf_leave") {
+      if (!me) return fail("Join the room first");
+      if (state.game) return fail("Game already started");
+      state.lobby = state.lobby.filter((p) => p.id !== me);
+      await this.ctx.storage.put("state", state);
+      await this.broadcastMafiaState();
+      return;
+    }
+    if (msg.type === "mf_reset") {
+      if (!state.game) return;
+      const res = Mafia.resetToLobby(state.game);
+      state.lobby = res.state.players.map((p) => ({ id: p.id, name: p.name }));
+      state.config = res.state.config;
+      state.game = null;
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.put("state", state);
+      await this.broadcastMafiaState();
+      return;
+    }
+    if (msg.type === "mf_start") {
+      if (state.game) return fail("Already started");
+      // Build the engine's lobby state from the DO lobby, then deal.
+      let game = Mafia.createInitialState();
+      for (const p of state.lobby) {
+        const res = Mafia.addPlayer(game, p.id, p.name);
+        if (res.error) return fail(res.error);
+        game = res.state;
+      }
+      game.config = state.config;
+      const res = Mafia.startGame(game);
+      if (res.error) return fail(res.error);
+      state.game = res.state;
+      await this.ctx.storage.put("state", state);
+      await this.armMafiaAlarm(state.game);
+      await this.broadcastMafiaState();
+      return;
+    }
+
+    // In-game actions need an identified seat.
+    if (!state.game) return fail("Game not started yet");
+    if (!me) return fail("Join the room first");
+
+    const E = Mafia;
+    let res;
+    switch (msg.type) {
+      case "mf_mafiaVote":   res = E.castMafiaVote(state.game, me, msg.targetId); break;
+      case "mf_doctorSave":  res = E.castDoctorSave(state.game, me, msg.targetId); break;
+      case "mf_detectiveCheck": res = E.castDetectiveCheck(state.game, me, msg.targetId); break;
+      case "mf_mafiaChat":   res = E.postMafiaChat(state.game, me, msg.text); break;
+      case "mf_dayChat":     res = E.postDayChat(state.game, me, msg.text); break;
+      case "mf_dayVote":     res = E.castDayVote(state.game, me, msg.targetId); break;
+      default: return;
+    }
+    if (res.error) return fail(res.error);
+    state.game = res.state;
+
+    // Resolve eagerly: a completed night/day ends the instant it's completable.
+    await this.advanceMafiaPhase(state);
+  }
+
+  // Resolve any night/day that is complete or expired, cascading through
+  // round transitions, then persist + broadcast + arm the next phase alarm.
+  async advanceMafiaPhase(state) {
+    let guard = 0;
+    for (;;) {
+      if (!state.game || guard++ > 20) break;
+      const g = state.game;
+      if (g.phase === Mafia.PHASE.NIGHT) {
+        const expired = g.phaseEndsAt != null && Date.now() >= g.phaseEndsAt;
+        if (!expired && !Mafia.nightActionsComplete(g)) break;
+        state.game = Mafia.resolveNight(g).state;
+      } else if (g.phase === Mafia.PHASE.DAY) {
+        const expired = g.phaseEndsAt != null && Date.now() >= g.phaseEndsAt;
+        if (!expired && !Mafia.dayVoteComplete(g)) break;
+        state.game = Mafia.resolveDayVote(g).state;
+      } else {
+        break;
+      }
+    }
+    await this.ctx.storage.put("state", state);
+    await this.armMafiaAlarm(state.game);
+    await this.broadcastMafiaState();
+  }
+
+  // One DO alarm at a time: aim it at the current phase's expiry.
+  async armMafiaAlarm(game) {
+    if (!game) return;
+    if (game.phase !== Mafia.PHASE.NIGHT && game.phase !== Mafia.PHASE.DAY) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    const at = game.phaseEndsAt != null ? game.phaseEndsAt + 100 : Date.now() + 1000;
+    await this.ctx.storage.setAlarm(Math.max(at, Date.now() + 200));
+  }
+
+  async broadcastMafiaState() {
+    const state = await this.ctx.storage.get("state");
+    if (!state || state.gameType !== "mafia") return;
+    for (const ws of this.ctx.getWebSockets()) {
+      let viewerId = null;
+      try { viewerId = ws.deserializeAttachment()?.clientId || null; } catch { /* none */ }
+      const payload = buildMafiaSnapshot(state, viewerId);
+      try { ws.send(JSON.stringify({ type: "state", data: payload })); } catch (_e) { void _e; }
+    }
+  }
+
   async broadcastLitState() {
     const state = await this.ctx.storage.get("state");
     if (!state || state.gameType !== "lit") return;
@@ -1484,15 +1533,13 @@ export class RoomDO extends DurableObject {
 }
 
 // Build the snapshot we send to a poker client: public room info + the
-// per-viewer redacted table (own hole cards only). The Splitwise token is
-// stored outside `state` and can never appear here.
+// per-viewer redacted table (own hole cards only).
 function buildPokerSnapshot(state, viewerId) {
   return {
     gameType: "poker",
     phase: state.phase,
     config: state.config,
     lobby: state.lobby || [],
-    splitwise: state.splitwise || { connected: false },
     table: state.table ? redactPoker(state.table, viewerId) : null,
   };
 }
@@ -1557,12 +1604,31 @@ function buildUndercoverSnapshot(state, viewerId) {
       stage: "lobby",
       players: lobby,
       roles,
-      defaultRoles: n >= 4 ? ucDefaultRoleCounts(n) : null,
-      playerCount: n,
     };
   }
   const view = ucRedactFor(state.game, viewerId);
   return { ...view, stage: "playing" };
+}
+
+// Build the snapshot we send to a Mafia client. Pre-start it's the lobby
+// seat list + config; post-start it's a per-viewer redacted engine view.
+function buildMafiaSnapshot(state, viewerId) {
+  const lobby = state?.lobby || [];
+  if (!state?.game) {
+    return {
+      phase: Mafia.PHASE.LOBBY,
+      players: lobby,
+      order: lobby.map((p) => p.id),
+      config: state?.config || { ...Mafia.DEFAULT_CONFIG },
+      night: { mafiaVotes: {}, doctorSave: null, detectiveCheck: null },
+      day: { votes: {}, votedIds: [], voteCandidates: null, tieRevoted: false },
+      mafiaChat: [],
+      dayChat: [],
+      log: [],
+      winner: null,
+    };
+  }
+  return Mafia.redactFor(state.game, viewerId);
 }
 
 function cors(response) {

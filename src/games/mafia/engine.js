@@ -1,17 +1,11 @@
 // Pure game engine for "MAFIA".
 //
-// Unlike lit/poker/undercover/hitler, this room is CLIENT-AUTHORITATIVE (like
-// FIFA): the whole state blob is posted to /state and broadcast verbatim to
-// every socket. There is no server-side redaction — every client technically
-// receives the mafia roster, mafia chat, and vote tallies in the raw blob.
-// The UI is responsible for only ever DISPLAYING what a given player should
-// see; this is an accepted tradeoff for a casual friend-group game, not a
-// security boundary.
-//
-// Because any connected client can compute-and-POST a transition (there is no
-// central arbiter), every apply* function here is a pure (state, ...args) =>
-// { state } | { error } reducer over the FULL blob, so any client's tap (or a
-// client's own timer-expiry watcher) can drive the game forward.
+// Like lit/poker/undercover/hitler, the room is SERVER-AUTHORITATIVE: the
+// Durable Object owns the state, every apply* function here is a pure
+// (state, ...args) => { state } | { error } reducer, and each socket receives
+// only a per-viewer REDACTED view (redactFor) — roles, mafia chat, night
+// actions and ballot targets never leave the server for viewers who
+// shouldn't see them.
 //
 // ── ROLES ────────────────────────────────────────────────────────────────
 //   • MAFIA — kill one town member per night by consensus (>50% of ALL alive
@@ -38,7 +32,8 @@
 //   same "whichever first" rule as night. A tie among the top vote-getters
 //   (skip counts as a candidate) triggers exactly ONE revote restricted to
 //   the tied options (its own short timer); whatever that revote produces —
-//   even another tie — is final. No further loops.
+//   even another tie — is final. No further loops. An expired day with no
+//   votes cast at all resolves as no-lynch — never a dead revote window.
 //
 // ── WIN CHECK (after every resolved elimination) ────────────────────────
 //   • No mafia alive → TOWN wins.
@@ -81,43 +76,6 @@ export function shuffle(arr, rng = Math.random) {
   return out;
 }
 
-// mulberry32 — deterministic PRNG from a 32-bit seed.
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function fnv1a(str) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-
-// Because this room is client-authoritative and there's no host, more than
-// one player can tap "Start" on the same pre-start lobby at nearly the same
-// moment — each computing startGame() independently on their own client.
-// If the shuffle used Math.random(), those two calls would produce DIFFERENT
-// role assignments for the same player list; whichever POST reaches the
-// Durable Object last wins the broadcast, silently swapping out a role a
-// player already saw on their reveal card. Seeding the shuffle from the
-// lobby's own contents (join order + config + gamesPlayed) makes every such
-// racing call converge on the IDENTICAL result, so it no longer matters who
-// "wins" — while gamesPlayed (bumped on every reset) still guarantees a
-// "Play Again" with the same players and settings gets a fresh shuffle
-// instead of reproducing the exact same roles.
-function seedFromLobby(order, config, gamesPlayed) {
-  return fnv1a(order.join(",") + "|" + JSON.stringify(config) + "|" + gamesPlayed);
-}
-
 export function defaultMafiaCount(n) {
   return Math.max(1, Math.round(n / 4));
 }
@@ -144,12 +102,11 @@ export function createInitialState() {
     players: [], // { id, name, role, alive }
     order: [], // join order (ids)
     config: { ...DEFAULT_CONFIG },
-    gamesPlayed: 0,
     round: 0,
     phaseEndsAt: null,
     night: emptyNight(),
     day: emptyDay(),
-    mafiaChat: [], // { t, by, text } — present in the blob for everyone; UI hides it from non-mafia
+    mafiaChat: [], // { t, by, text } — redacted to mafia viewers only
     dayChat: [], // { t, by, text } — public
     log: [],
     winner: null,
@@ -201,6 +158,15 @@ export function addPlayer(state, id, name) {
   return { state: next };
 }
 
+export function removePlayer(state, id) {
+  if (state.phase !== PHASE.LOBBY) return { error: "Game already started" };
+  const next = clone(state);
+  if (!seatById(next, id)) return { error: "Not in the lobby" };
+  next.players = next.players.filter((p) => p.id !== id);
+  next.order = next.order.filter((pid) => pid !== id);
+  return { state: next };
+}
+
 export function setConfig(state, patch) {
   if (state.phase !== PHASE.LOBBY) return { error: "Can't change settings mid-game" };
   const next = clone(state);
@@ -214,10 +180,6 @@ export function startGame(state, rng = null) {
   const err = validateConfig(n, state.config);
   if (err) return { error: err };
 
-  // Deterministic by default (see seedFromLobby above) — only tests pass an
-  // explicit rng to force a particular shuffle.
-  const effectiveRng = rng || mulberry32(seedFromLobby(state.order, state.config, state.gamesPlayed));
-
   const { mafiaCount, doctorEnabled, detectiveEnabled } = state.config;
   const villagers = n - mafiaCount - (doctorEnabled ? 1 : 0) - (detectiveEnabled ? 1 : 0);
   const bag = [
@@ -226,7 +188,7 @@ export function startGame(state, rng = null) {
     ...(detectiveEnabled ? [ROLE.DETECTIVE] : []),
     ...Array(villagers).fill(ROLE.VILLAGER),
   ];
-  const roleOrder = shuffle(bag, effectiveRng);
+  const roleOrder = shuffle(bag, rng || Math.random);
 
   const next = clone(state);
   next.players = next.order.map((id, i) => {
@@ -422,7 +384,10 @@ export function resolveDayVote(state) {
     return { state: applyDayOutcome(next, topped[0]) };
   }
 
-  if (!next.day.tieRevoted) {
+  // Zero votes (expired day, no one acted) or a second tie → no elimination.
+  // Never open a revote with no candidates — that window can't resolve.
+  const noElim = topped.length === 0 || next.day.tieRevoted;
+  if (!noElim) {
     next.day.voteCandidates = topped;
     next.day.votes = {};
     next.day.tieRevoted = true;
@@ -431,8 +396,11 @@ export function resolveDayVote(state) {
     return { state: next };
   }
 
-  // Second tie (post-revote) → final, no elimination.
-  next.log.push({ t: Date.now(), kind: "day_tie_no_elim", round: next.round });
+  next.log.push({
+    t: Date.now(),
+    kind: topped.length === 0 ? "day_no_lynch" : "day_tie_no_elim",
+    round: next.round,
+  });
   return { state: advanceToNight(next) };
 }
 
@@ -478,8 +446,52 @@ export function resetToLobby(state) {
   next.players = state.players.map((p) => ({ id: p.id, name: p.name, role: null, alive: true }));
   next.order = state.order.slice();
   next.config = { ...state.config };
-  // Bump so a same-players/same-settings replay still reshuffles roles
-  // (see seedFromLobby) instead of reproducing the exact prior assignment.
-  next.gamesPlayed = (state.gamesPlayed || 0) + 1;
   return { state: next };
+}
+
+// ── REDACTION ────────────────────────────────────────────────────────────
+// Per-viewer view of the game state. Own role, dead players' roles, and (for
+// mafia) fellow mafia are visible; everything secret stays server-side.
+// Ballots expose only WHO voted (votedIds) plus the viewer's own vote —
+// targets surface in the public day_vote_result log entry once resolved.
+export function redactFor(state, viewerId) {
+  if (!state) return null;
+  const viewer = state.players.find((p) => p.id === viewerId) || null;
+  const isMafia = viewer?.role === ROLE.MAFIA;
+  const over = state.phase === PHASE.OVER;
+
+  const roleVisible = (p) =>
+    over || !p.alive || p.id === viewerId || (isMafia && p.role === ROLE.MAFIA);
+
+  const votes = {};
+  if (viewer?.alive && state.day.votes[viewerId] !== undefined) {
+    votes[viewerId] = state.day.votes[viewerId];
+  }
+
+  return {
+    gameType: state.gameType,
+    phase: state.phase,
+    round: state.round,
+    phaseEndsAt: state.phaseEndsAt,
+    config: state.config,
+    order: state.order,
+    players: state.players.map((p) => ({ ...p, role: roleVisible(p) ? p.role : null })),
+    night: {
+      mafiaVotes: isMafia ? { ...state.night.mafiaVotes } : {},
+      doctorSave: viewer?.role === ROLE.DOCTOR ? state.night.doctorSave : null,
+      detectiveCheck: viewer?.role === ROLE.DETECTIVE ? state.night.detectiveCheck : null,
+    },
+    day: {
+      votes,
+      votedIds: Object.keys(state.day.votes),
+      voteCandidates: state.day.voteCandidates,
+      tieRevoted: state.day.tieRevoted,
+    },
+    mafiaChat: isMafia ? state.mafiaChat.slice(-60) : [],
+    dayChat: state.dayChat.slice(-60),
+    log: isMafia
+      ? state.log.slice(-80)
+      : state.log.filter((e) => e.kind !== "mafia_vote_cast").slice(-80),
+    winner: state.winner,
+  };
 }

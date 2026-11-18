@@ -1,5 +1,4 @@
 import { useState } from "react";
-import MemberCombobox from "../../../components/MemberCombobox";
 import { computeMarketNets, resultOutcomeFromScore, poolByOutcome, marketPool } from "../bets";
 
 const CUR_SYM = { INR: "₹", USD: "$", EUR: "€", GBP: "£" };
@@ -8,38 +7,49 @@ function money(n, cur) {
   const v = Math.abs(Number(n) || 0);
   return `${Number(n) < 0 ? "−" : ""}${sym}${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
-function memberName(members, id) {
-  const m = (members || []).find((x) => String(x.id) === String(id));
-  return m ? m.name : `#${id}`;
-}
+// Bettor identity = normalized typed name; display keeps the raw spelling.
+const bettorKey = (name) => String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
 
 // `initial` (a bet being edited) seeds the form; it's keyed by the parent so a
-// new `initial` remounts this with fresh state. Because one member holds at most
-// one bet per market, re-placing for the same member overwrites — that IS the
-// edit. `onCancelEdit` drops back to a blank form.
-function PlaceBet({ market, members, currency, onPlaceBet, initial, onCancelEdit }) {
-  const [memberId, setMemberId] = useState(initial?.memberId ?? "");
+// new `initial` remounts this with fresh state. Because one bettor holds at
+// most one bet per market, re-placing for the same bettor overwrites — that IS
+// the edit. `onCancelEdit` drops back to a blank form.
+function PlaceBet({ market, knownBettors, currency, onPlaceBet, initial, onCancelEdit }) {
+  const [name, setName] = useState(initial?.memberName ?? "");
   const [outcomeId, setOutcomeId] = useState(initial?.outcomeId ?? "");
   const [stake, setStake] = useState(initial?.stake != null ? String(initial.stake) : "");
   const editing = !!initial;
-  const ready = memberId && outcomeId && Number(stake) > 0;
+  const ready = name.trim() && outcomeId && Number(stake) > 0;
 
   const submit = () => {
     if (!ready) return;
     onPlaceBet(market.id, {
-      memberId,
-      memberName: memberName(members, memberId),
+      memberId: bettorKey(name),
+      memberName: name.trim(),
       outcomeId,
       stake: Math.round(Number(stake) * 100) / 100,
     });
     if (editing) onCancelEdit?.();
-    else setStake(""); // keep member + outcome for quick repeat entry
+    else setStake(""); // keep bettor + outcome for quick repeat entry
   };
 
   return (
     <div className={"bm-place" + (editing ? " editing" : "")}>
       {editing && <div className="bm-place-tag">Editing bet</div>}
-      <MemberCombobox members={members || []} value={memberId} onChange={setMemberId} />
+      <div className="bm-bettor-row">
+        <input
+          className="bm-bettor"
+          type="text"
+          list="bm-bettors"
+          placeholder="Bettor name"
+          maxLength={32}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <datalist id="bm-bettors">
+          {knownBettors.map((n) => <option key={n} value={n} />)}
+        </datalist>
+      </div>
       <div className="bm-outcomes">
         {market.outcomes.map((o) => (
           <button
@@ -76,7 +86,7 @@ function PlaceBet({ market, members, currency, onPlaceBet, initial, onCancelEdit
   );
 }
 
-function MarketCard({ market, match, members, currency, locked, completed, onPlaceBet, onRemoveBet, onSettle }) {
+function MarketCard({ market, match, knownBettors, currency, locked, completed, onPlaceBet, onRemoveBet, onSettle }) {
   const pools = poolByOutcome(market.bets);
   const total = marketPool(market.bets);
   const settled = market.settlement;
@@ -88,15 +98,12 @@ function MarketCard({ market, match, members, currency, locked, completed, onPla
   const [winSel, setWinSel] = useState("");
   const winningOutcomeId = isResult ? autoWin : winSel;
 
-  const [busy, setBusy] = useState(false);
+  const nameOf = (id) => {
+    const b = market.bets.find((x) => String(x.memberId) === String(id));
+    return b?.memberName || String(id);
+  };
   const preview = completed && winningOutcomeId ? computeMarketNets(market.bets, winningOutcomeId) : [];
   const willVoid = completed && !!winningOutcomeId && preview.length === 0;
-
-  const doSettle = async () => {
-    if (busy || !winningOutcomeId) return;
-    setBusy(true);
-    try { await onSettle(market, winningOutcomeId); } finally { setBusy(false); }
-  };
 
   return (
     <div className="bm-market">
@@ -120,7 +127,7 @@ function MarketCard({ market, match, members, currency, locked, completed, onPla
             const o = market.outcomes.find((x) => x.id === b.outcomeId);
             return (
               <li key={b.id} className={editBet?.id === b.id ? "editing" : ""}>
-                <span className="bm-bet-who">{b.memberName || memberName(members, b.memberId)}</span>
+                <span className="bm-bet-who">{b.memberName || nameOf(b.memberId)}</span>
                 <span className="bm-bet-on">{o?.label || b.outcomeId}</span>
                 <span className="bm-bet-amt">{money(b.stake, currency)}</span>
                 {editable && (
@@ -156,7 +163,7 @@ function MarketCard({ market, match, members, currency, locked, completed, onPla
         <PlaceBet
           key={editBet?.id || "new"}
           market={market}
-          members={members}
+          knownBettors={knownBettors}
           currency={currency}
           onPlaceBet={onPlaceBet}
           initial={editBet}
@@ -187,9 +194,23 @@ function MarketCard({ market, match, members, currency, locked, completed, onPla
           ) : null}
 
           {settled?.sent ? (
-            <div className="bm-done ok">✓ Settled on Splitwise{settled.expenseId ? ` (#${settled.expenseId})` : ""}</div>
+            <div className="bm-done ok">
+              <div>✓ Settled — pay up in cash.</div>
+              {(settled.transfers || []).length > 0 && (
+                <ul className="bm-transfers">
+                  {settled.transfers.map((tr, i) => (
+                    <li key={i}>
+                      <span>{tr.fromName}</span>
+                      <span className="muted">pays</span>
+                      <span>{tr.toName}</span>
+                      <span className="bm-transfer-amt">{money(tr.amount, currency)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           ) : settled?.void ? (
-            <div className="bm-done void">Void — no bets on the other side, nothing sent.</div>
+            <div className="bm-done void">Void — no bets on the other side, nothing owed.</div>
           ) : (
             <>
               {willVoid && <div className="bm-done void">No bets on the other side → nothing to settle.</div>}
@@ -197,16 +218,19 @@ function MarketCard({ market, match, members, currency, locked, completed, onPla
                 <ul className="bm-preview">
                   {preview.map((p) => (
                     <li key={p.memberId} className={p.net > 0 ? "pos" : "neg"}>
-                      <span>{memberName(members, p.memberId)}</span>
+                      <span>{nameOf(p.memberId)}</span>
                       <span>{money(p.net, currency)}</span>
                     </li>
                   ))}
                 </ul>
               )}
-              <button className="bm-settle-btn" disabled={busy || !winningOutcomeId || willVoid} onClick={doSettle}>
-                {busy ? "Sending…" : willVoid ? "Nothing to settle" : "Send to Splitwise"}
+              <button
+                className="bm-settle-btn"
+                disabled={!winningOutcomeId || willVoid}
+                onClick={() => onSettle(market, winningOutcomeId)}
+              >
+                {willVoid ? "Nothing to settle" : "Settle →"}
               </button>
-              {settled?.error && <div className="bm-done err">⚠ {settled.error}</div>}
             </>
           )}
         </div>
@@ -255,7 +279,7 @@ function AddMarket({ onAdd, onCancel }) {
 }
 
 export default function BetMatchModal({
-  match, matchLabel, markets, kickedOffAt, members, currency,
+  match, matchLabel, markets, kickedOffAt, knownBettors, currency,
   onPlaceBet, onRemoveBet, onAddMarket, onKickOff, onSettle, onClose,
 }) {
   const locked = !!kickedOffAt;
@@ -282,7 +306,7 @@ export default function BetMatchModal({
               key={mk.id}
               market={mk}
               match={match}
-              members={members}
+              knownBettors={knownBettors}
               currency={currency}
               locked={locked}
               completed={completed}

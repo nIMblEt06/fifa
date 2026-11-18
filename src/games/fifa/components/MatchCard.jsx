@@ -33,7 +33,7 @@ export default function MatchCard({ match, players, teamsByName, onOpen, isLive,
   // A match is playable only when both slots are filled and it's not a bye.
   const playable = !isBye && home && away;
 
-  // Betting chip — shown when Splitwise is connected and both sides are known.
+  // Betting chip — betting is always on; it only shows once both sides are known.
   const bettable = betting?.active && !isBye && home && away;
   const betSummary = bettable ? betting.summary?.[match.id] : null;
   const betStatus = bettable ? betting.status?.[match.id]?.status : null;

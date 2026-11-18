@@ -9,6 +9,7 @@ import WallOfShame from "./components/WallOfShame";
 import BettingBar from "./components/BettingBar";
 import BetMatchModal from "./components/BetMatchModal";
 import { computeMarketNets, resultOutcomeFromScore, round2 } from "./bets";
+import { computeSettlement } from "../../utils/settlement.js";
 import Marquee from "../../components/Marquee";
 import Reactions from "../../components/Reactions";
 import { generateFixtures, computeStandings } from "./utils/fixtures";
@@ -35,23 +36,6 @@ const PHASES = {
 
 const GROUP_THRESHOLD = 6; // N >= this → multi-group format
 
-const todayIso = () => {
-  const d = new Date();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}-${mm}-${dd}`;
-};
-
-// Pull a one-shot ?sw=… marker out of the URL hash (the OAuth callback bounces
-// back to #/r/CODE/fifa?sw=connected) and scrub it.
-function takeSwFlag() {
-  const m = window.location.hash.match(/[?&]sw=([a-z]+)/);
-  if (!m) return null;
-  const cleaned = window.location.hash.replace(/[?&]sw=[a-z]+/, "");
-  window.history.replaceState(null, "", window.location.pathname + cleaned);
-  return m[1];
-}
-
 function emptyState() {
   return {
     phase: PHASES.SETUP,
@@ -76,10 +60,8 @@ function emptyState() {
     endedAt: null,            // stamped when champion is crowned
     savedTournamentId: null,  // d1 row id after auto-save
     saveError: null,
-    // Per-match Splitwise betting (client-authoritative, syncs with the blob).
-    // The Splitwise CONNECTION itself (token/group/members) is server-side and
-    // read via /splitwise/status — only currency, kickoff locks, markets + bets
-    // live here.
+    // Per-match betting (client-authoritative, syncs with the blob): currency,
+    // kickoff locks, markets + bets, and local payouts.
     betting: {
       currency: "INR",
       matches: {},   // { [matchId]: { kickedOffAt } }
@@ -89,50 +71,9 @@ function emptyState() {
 }
 
 export default function FifaApp({ code, onLeave }) {
-  // Splitwise connection lives server-side; we mirror it locally from the
-  // /status fetch and the room's live `splitwise` broadcast.
-  const [swStatus, setSwStatus] = useState({ connected: false });
-  const handleRoomMessage = useCallback((msg) => {
-    if (msg?.type === "splitwise") setSwStatus(msg.data || { connected: false });
-  }, []);
   const { state: remoteState, presence, reactions, sendState, sendReaction, connected, ready } =
-    useRoom(code, { onMessage: handleRoomMessage });
+    useRoom(code);
   const { teams, byName: teamsByName } = useTeams();
-
-  const [swFlag, setSwFlag] = useState(() => takeSwFlag());
-  useEffect(() => {
-    if (!swFlag) return;
-    const id = setTimeout(() => setSwFlag(null), 5000);
-    return () => clearTimeout(id);
-  }, [swFlag]);
-
-  // Seed the connection status on mount and after an OAuth bounce.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`/api/room/${code.toLowerCase()}/splitwise/status`);
-        const data = await res.json();
-        if (!cancelled && res.ok) setSwStatus(data || { connected: false });
-      } catch { /* offline — bar will show disconnected */ }
-    })();
-    return () => { cancelled = true; };
-  }, [code, swFlag]);
-
-  // A group can be set without members loaded (e.g. a pre-configured house
-  // account) — pull them so the bettor picker isn't empty.
-  useEffect(() => {
-    if (!swStatus.connected || !swStatus.groupId || swStatus.members) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`/api/room/${code.toLowerCase()}/splitwise/members`);
-        const data = await res.json();
-        if (!cancelled && res.ok && Array.isArray(data)) setSwStatus((s) => ({ ...s, members: data }));
-      } catch { /* offline */ }
-    })();
-    return () => { cancelled = true; };
-  }, [code, swStatus.connected, swStatus.groupId, swStatus.members]);
 
   const [openBetsId, setOpenBetsId] = useState(null);
 
@@ -222,8 +163,9 @@ export default function FifaApp({ code, onLeave }) {
   const [openMatch, setOpenMatch] = useState(null);
 
   // ── Match betting ─────────────────────────────────────────
+  // Local pari-mutuel betting: markets + bets sync with the room blob, payouts
+  // are computed and settled in-app — settle by hand in cash.
   const betting = state.betting || { currency: "INR", matches: {}, markets: {} };
-  const bettingActive = !!swStatus.connected && !!swStatus.groupId;
 
   const matchById = useMemo(() => {
     const map = {};
@@ -441,43 +383,37 @@ export default function FifaApp({ code, onLeave }) {
   );
 
   const settleMarket = useCallback(
-    async (market, winningOutcomeId) => {
+    (market, winningOutcomeId) => {
       const nets = computeMarketNets(market.bets, winningOutcomeId);
-      const m = matchById[market.matchId];
-      const label = m ? matchLabel(m) : "FIFA match";
-      // No payable split (one-sided / draw with no draw bets) → send nothing.
+      // No payable split (one-sided / draw with no draw bets) → nothing owed.
       if (nets.length === 0) {
         updateBetting((b) => patchMarket(b, market.id, { resolvedOutcomeId: winningOutcomeId, settlement: { sent: false, void: true, at: Date.now() } }));
         return;
       }
-      const description = market.kind === "result" ? label : `${label} · ${market.title}`;
-      try {
-        const res = await fetch(`/api/room/${code.toLowerCase()}/splitwise/settle`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            description,
-            currency: betting.currency || "INR",
-            date: todayIso(),
-            participants: nets.map((n) => ({ userId: n.memberId, net: n.net })),
-          }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          updateBetting((b) => patchMarket(b, market.id, { resolvedOutcomeId: winningOutcomeId, settlement: { sent: false, error: data.error || `Failed (${res.status})`, at: Date.now() } }));
-        } else {
-          updateBetting((b) => patchMarket(b, market.id, { resolvedOutcomeId: winningOutcomeId, settlement: { sent: true, expenseId: data.expenseId ?? null, at: Date.now() } }));
-        }
-      } catch (e) {
-        updateBetting((b) => patchMarket(b, market.id, { resolvedOutcomeId: winningOutcomeId, settlement: { sent: false, error: e.message, at: Date.now() } }));
-      }
+      // Bettor names live on each bet; nets are keyed by the normalized name.
+      const names = {};
+      for (const bet of market.bets) names[bet.memberId] = bet.memberName || bet.memberId;
+      const transfers = computeSettlement(
+        nets.map((n) => ({ id: n.memberId, name: names[n.memberId] || String(n.memberId), net: n.net }))
+      );
+      updateBetting((b) => patchMarket(b, market.id, {
+        resolvedOutcomeId: winningOutcomeId,
+        settlement: { sent: true, at: Date.now(), transfers },
+      }));
     },
-    [matchById, matchLabel, betting.currency, code, updateBetting]
+    [updateBetting]
   );
 
-  const bettingProps = bettingActive
-    ? { active: true, summary: betSummary, status: betStatusByMatch, kicked: betting.matches || {}, currency: betting.currency || "INR", onOpen: openBets }
-    : null;
+  // Bettor names seen anywhere in the room — feeds the bet-form datalist.
+  const knownBettors = useMemo(() => {
+    const seen = new Set();
+    for (const mk of Object.values(betting.markets || {})) {
+      for (const b of mk.bets || []) seen.add(b.memberName || String(b.memberId));
+    }
+    return [...seen];
+  }, [betting.markets]);
+
+  const bettingProps = { active: true, summary: betSummary, status: betStatusByMatch, kicked: betting.matches || {}, currency: betting.currency || "INR", onOpen: openBets };
 
   // ── Hall-of-Fame auto-save ────────────────────────────────
   // Fires once when the tournament ends. Server dedups via (room_code, ended_at)
@@ -694,7 +630,6 @@ export default function FifaApp({ code, onLeave }) {
         }));
         // Advance as far as possible (build subsequent rounds / crown champion).
         let champ = prev.champion;
-        // eslint-disable-next-line no-constant-condition
         while (true) {
           const res = advanceKnockout(rounds);
           if (res.champion != null) {
@@ -778,7 +713,6 @@ export default function FifaApp({ code, onLeave }) {
       let { rounds } = buildKnockout(seeds, groupOf);
       // Resolve any first-round byes immediately so round 2 is ready.
       let champ = null;
-      // eslint-disable-next-line no-constant-condition
       while (true) {
         const res = advanceKnockout(rounds);
         if (res.champion != null) { champ = res.champion; rounds = res.rounds; break; }
@@ -893,19 +827,8 @@ export default function FifaApp({ code, onLeave }) {
         <div className="conn-state">RECONNECTING…</div>
       )}
 
-      {swFlag && (
-        <div className={"poker-sw-flag " + (swFlag === "connected" ? "ok" : "bad")}>
-          {swFlag === "connected" && "✓ Splitwise connected"}
-          {swFlag === "denied" && "Splitwise access was denied"}
-          {swFlag === "expired" && "Splitwise login expired — try again"}
-          {swFlag === "error" && "Splitwise connection failed — try again"}
-        </div>
-      )}
-
       {ready && (phase === PHASES.GROUP || phase === PHASES.KNOCKOUT) && (
         <BettingBar
-          code={code}
-          sw={swStatus}
           currency={betting.currency || "INR"}
           onSetCurrency={setBetCurrency}
           ledger={betLedger}
@@ -1021,13 +944,13 @@ export default function FifaApp({ code, onLeave }) {
         />
       )}
 
-      {openBetsId && bettingActive && matchById[openBetsId] && (
+      {openBetsId && matchById[openBetsId] && (
         <BetMatchModal
           match={matchById[openBetsId]}
           matchLabel={matchLabel(matchById[openBetsId])}
           markets={marketsByMatch[openBetsId] || []}
           kickedOffAt={betting.matches?.[openBetsId]?.kickedOffAt || null}
-          members={swStatus.members || []}
+          knownBettors={knownBettors}
           currency={betting.currency || "INR"}
           onPlaceBet={placeBet}
           onRemoveBet={removeBet}

@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "test": "node --test src/games/*/*.test.mjs",
+    "smoke": "node scripts/smoke-room.mjs",
     "preview": "vite preview",
     "fetch-teams": "node scripts/fetchTeams.mjs",
     "deploy": "vite build && wrangler deploy"

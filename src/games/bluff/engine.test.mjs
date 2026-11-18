@@ -49,7 +49,8 @@ function rigged(players, hands, turn) {
   g.passes = 0;
   g.out = [];
   g.loser = null;
-  g.winner = null;
+  g.outSeq = 0;
+  g.emptyAt = {};
   g.turn = turn;
   return g;
 }
@@ -207,16 +208,75 @@ test("going out finalizes on burn/round-reset too", () => {
   assert.ok(g.out.includes("p0"));
 });
 
-// ── Game end ───────────────────────────────────────────────────────
-test("game ends with a loser when ≤1 player holds cards", () => {
-  // p0 and p1 each have 1 card; p2 has 2. p0 then p1 go out truthfully.
+// ── Game end + final challenge window ──────────────────────────────
+test("a play leaving one holder opens the final challenge window", () => {
+  // p0 and p1 each have 1 card; p2 has 2. p0 then p1 go out — the game must
+  // stay open so p2 can act on p1's final (possibly lying) play.
   let g = rigged(P(3), { p0: ["KS"], p1: ["KH"], p2: ["2C", "3C"] }, "p0");
   g = applyPlay(g, "p0", ["KS"], "K").state;   // p0 out (provisional), turn p1
-  g = applyPlay(g, "p1", ["KH"], "K").state;   // p1 out (provisional), turn p2 — only p2 can act
-  // With only p2 holding cards, the game should be over.
-  assert.ok(g.loser === "p2", "p2 is the crapico");
-  assert.ok(g.out.includes("p0") && g.out.includes("p1"));
-  assert.equal(g.winner, "p0");
+  g = applyPlay(g, "p1", ["KH"], "K").state;   // p1 out (provisional)
+  assert.equal(g.loser, null, "game stays open");
+  assert.equal(g.turn, "p2", "p2 gets to act on the final play");
+  assert.ok(!g.out.includes("p0") && !g.out.includes("p1"), "outs still provisional");
+});
+
+test("final lying play: last holder calls and the liar is back in with the pile", () => {
+  let g = rigged(P(3), { p0: ["KS"], p1: ["2H"], p2: ["5S", "6S"] }, "p0");
+  g = applyPlay(g, "p0", ["KS"], "K").state;   // p0 empties truthfully
+  g = applyPlay(g, "p1", ["2H"], "K").state;    // p1 empties LYING — window, turn p2
+  const r = applyBluff(g, "p2");
+  assert.ok(!r.error, r.error);
+  assert.ok(!r.state.out.includes("p1"), "liar revived");
+  assert.equal(r.state.hands.p1.length, 2, "liar picked the pile back up");
+  assert.ok(r.state.out.includes("p0"), "p0 confirmed out");
+  assert.equal(r.state.loser, null, "game continues");
+  assert.equal(r.state.turn, "p2", "successful challenger opens");
+});
+
+test("final truthful play: the caller eats the pile and is the loser", () => {
+  let g = rigged(P(3), { p0: ["KS"], p1: ["KH"], p2: ["5S", "6S"] }, "p0");
+  g = applyPlay(g, "p0", ["KS"], "K").state;
+  g = applyPlay(g, "p1", ["KH"], "K").state;    // truthful — window, turn p2
+  const r = applyBluff(g, "p2");
+  assert.ok(!r.error, r.error);
+  assert.equal(r.state.hands.p2.length, 4, "caller ate the pile");
+  assert.equal(r.state.loser, "p2");
+  assert.deepEqual(r.state.out, ["p0", "p1"]);
+});
+
+test("last holder declines (pass) and ends the game as the loser", () => {
+  let g = rigged(P(3), { p0: ["KS"], p1: ["KH"], p2: ["5S", "6S"] }, "p0");
+  g = applyPlay(g, "p0", ["KS"], "K").state;
+  g = applyPlay(g, "p1", ["KH"], "K").state;    // window, turn p2
+  const r = applyPass(g, "p2");                 // decline → burn → finalize → end
+  assert.ok(!r.error, r.error);
+  assert.equal(r.state.loser, "p2");
+  assert.deepEqual(r.state.out, ["p0", "p1"]);
+  assert.equal(r.state.turn, null);
+});
+
+test("finish order follows emptying order, not seat order", () => {
+  // p1 empties first, then p0 — out must rank p1 before p0 despite seats.
+  let g = rigged(P(3), { p0: ["KS"], p1: ["KH"], p2: ["5S", "6S"] }, "p1");
+  g = applyPlay(g, "p1", ["KH"], "K").state;    // p1 empties first, turn p2
+  g = applyPass(g, "p2").state;                 // turn p0
+  g = applyPlay(g, "p0", ["KS"], "K").state;    // p0 empties second — window
+  const r = applyPass(g, "p2");                 // burn → finalize both
+  assert.ok(!r.error, r.error);
+  assert.deepEqual(r.state.out, ["p1", "p0"], "out order = emptying order");
+  assert.equal(r.state.loser, "p2");
+});
+
+test("last holder emptying too: the last to empty is the loser", () => {
+  // From the window the holder plays their final card — nobody can challenge
+  // it, so everyone has emptied and the last to empty loses.
+  let g = rigged(P(3), { p0: ["KS"], p1: ["KH"], p2: ["5S"] }, "p0");
+  g = applyPlay(g, "p0", ["KS"], "K").state;
+  g = applyPlay(g, "p1", ["KH"], "K").state;    // window, turn p2
+  const r = applyPlay(g, "p2", ["5S"], "K");
+  assert.ok(!r.error, r.error);
+  assert.equal(r.state.loser, "p2");
+  assert.deepEqual(r.state.out, ["p0", "p1", "p2"]);
 });
 
 // ── Redaction ──────────────────────────────────────────────────────
@@ -296,7 +356,7 @@ test("random bot game runs to a clean finish", () => {
       assert.ok(!res.error, `seed ${seed}: stuck — ${res.error}`);
       g = res.state;
     }
-    assert.ok(g.loser !== undefined, `seed ${seed}: game finished (steps=${steps})`);
+    assert.ok(g.loser, `seed ${seed}: game finished (steps=${steps})`);
     // At most one player still holds cards (the crapico). Burns can in rare
     // cases empty everyone, in which case the last to go out is the loser.
     const holders = g.players.filter((p) => g.hands[p.id].length > 0).map((p) => p.id);

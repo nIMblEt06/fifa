@@ -68,7 +68,7 @@ test("role counts per player count", () => {
 
 test("startGame deals exactly the right roles for each count", () => {
   for (let n = 5; n <= 10; n++) {
-    const s = startGame(mkPlayers(n), {}, lcg(n + 7));
+    const s = startGame(mkPlayers(n), lcg(n + 7));
     const roles = Object.values(s.roles);
     const c = roleCountsFor(n);
     assert.strictEqual(roles.filter((r) => r === LIBERAL).length, c.liberals, `liberals @${n}`);
@@ -87,7 +87,7 @@ test("rejects <5 and >10 players", () => {
 
 // ── Knowledge / redaction matrix ─────────────────────────────────────────────
 test("fascists know each other and Hitler; liberals know nothing", () => {
-  let s = startGame(mkPlayers(7), {}, lcg(1));
+  let s = startGame(mkPlayers(7), lcg(1));
   // p0=H, p1=F, p2=F, p3..p6=L
   withRoles(s, [HITLER, FASCIST, FASCIST, LIBERAL, LIBERAL, LIBERAL, LIBERAL]);
 
@@ -103,13 +103,13 @@ test("fascists know each other and Hitler; liberals know nothing", () => {
 
 test("Hitler knows the fascist in 5–6p but not in 7+p", () => {
   // 5p: Hitler should see the single fascist.
-  let s5 = startGame(mkPlayers(5), {}, lcg(2));
+  let s5 = startGame(mkPlayers(5), lcg(2));
   withRoles(s5, [HITLER, FASCIST, LIBERAL, LIBERAL, LIBERAL]);
   const h5 = redactFor(s5, "p0");
   assert.strictEqual(h5.players.find((p) => p.id === "p1").role, FASCIST, "Hitler sees fascist @5p");
 
   // 7p: Hitler should know nothing but self.
-  let s7 = startGame(mkPlayers(7), {}, lcg(3));
+  let s7 = startGame(mkPlayers(7), lcg(3));
   withRoles(s7, [HITLER, FASCIST, FASCIST, LIBERAL, LIBERAL, LIBERAL, LIBERAL]);
   const h7 = redactFor(s7, "p0");
   const known = h7.players.filter((p) => p.role).map((p) => p.id);
@@ -117,7 +117,7 @@ test("Hitler knows the fascist in 5–6p but not in 7+p", () => {
 });
 
 test("spectator sees no roles; game-over reveals all", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(4));
+  let s = startGame(mkPlayers(5), lcg(4));
   withRoles(s, [HITLER, FASCIST, LIBERAL, LIBERAL, LIBERAL]);
   const spec = redactFor(s, "nobody");
   assert.strictEqual(spec.players.filter((p) => p.role).length, 0);
@@ -131,7 +131,7 @@ test("spectator sees no roles; game-over reveals all", () => {
 // ── Term limits ──────────────────────────────────────────────────────────────
 test("term limits: prev chancellor always ineligible; prev president ineligible when >5 alive", () => {
   // 7 players → >5 alive → both prev pres and prev chancellor blocked.
-  let s = startGame(mkPlayers(7), {}, lcg(5));
+  let s = startGame(mkPlayers(7), lcg(5));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, LIBERAL, FASCIST, FASCIST, HITLER]);
   s.presidentIdx = 0; s.president = "p0";
   s = electGov(s, "p0", "p1"); // p0 pres, p1 chancellor elected
@@ -146,7 +146,7 @@ test("term limits: prev chancellor always ineligible; prev president ineligible 
 });
 
 test("term limits: prev president eligible again at exactly 5 alive", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(6));
+  let s = startGame(mkPlayers(5), lcg(6));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s.lastElected = { president: "p0", chancellor: "p1" };
   s.president = "p2"; s.presidentIdx = 2; s.phase = "nomination";
@@ -163,7 +163,7 @@ function pickIndex(cards, kind) {
 
 // ── Voting & election tracker ────────────────────────────────────────────────
 test("votes hidden until all cast, then revealed; double-vote rejected", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(7));
+  let s = startGame(mkPlayers(5), lcg(7));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s.president = "p0"; s.presidentIdx = 0;
   s = ok(nominateChancellor(s, "p0", "p1"));
@@ -185,7 +185,7 @@ test("votes hidden until all cast, then revealed; double-vote rejected", () => {
 });
 
 test("tie fails the election (majority must be strictly greater)", () => {
-  let s = startGame(mkPlayers(6), {}, lcg(8));
+  let s = startGame(mkPlayers(6), lcg(8));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s.president = "p0"; s.presidentIdx = 0;
   s = ok(nominateChancellor(s, "p0", "p1"));
@@ -197,12 +197,13 @@ test("tie fails the election (majority must be strictly greater)", () => {
 });
 
 test("election tracker auto-enacts at 3, no power, resets tracker & term limits", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(9));
+  let s = startGame(mkPlayers(5), lcg(9));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   // Stack deck so top card is known.
   s.deck = [FASCIST, LIBERAL, LIBERAL, ...s.deck];
   s.fascistPolicies = 2; // a fascist enact at F3 would normally trigger peek
   s.lastElected = { president: "p0", chancellor: "p1" };
+  s.president = "p0"; s.presidentIdx = 0;
   // Fail three elections.
   const failOnce = (st) => {
     let x = ok(nominateChancellor(st, st.president, eligibleChancellors(st)[0]));
@@ -218,11 +219,13 @@ test("election tracker auto-enacts at 3, no power, resets tracker & term limits"
   assert.strictEqual(s.electionTracker, 0, "tracker reset");
   assert.strictEqual(s.phase, "nomination", "no power triggered by chaos enact");
   assert.deepStrictEqual(s.lastElected, { president: null, chancellor: null }, "term limits reset");
+  // Fails moved p0→p1→p2; the chaos enact rotates exactly once more → p3.
+  assert.strictEqual(s.president, "p3", "chaos enact rotates presidency exactly once");
 });
 
 // ── Legislative flow ─────────────────────────────────────────────────────────
 test("legislative: president draws 3, discards 1, chancellor enacts 1; discards never revealed", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(10));
+  let s = startGame(mkPlayers(5), lcg(10));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s.deck = [LIBERAL, FASCIST, FASCIST, ...s.deck.slice(3)];
   s.president = "p0"; s.presidentIdx = 0;
@@ -249,7 +252,7 @@ test("legislative: president draws 3, discards 1, chancellor enacts 1; discards 
 });
 
 test("reshuffle when deck < 3", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(11));
+  let s = startGame(mkPlayers(5), lcg(11));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s = withRng(s, lcg(99));
   s.deck = [LIBERAL, LIBERAL]; // only 2 left
@@ -295,7 +298,7 @@ function enactFascist(s) {
 }
 
 test("policy peek (5-6p, F3): president sees top 3 privately, then acks", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(12));
+  let s = startGame(mkPlayers(5), lcg(12));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s.president = "p0"; s.presidentIdx = 0;
   s.fascistPolicies = 2;
@@ -311,7 +314,7 @@ test("policy peek (5-6p, F3): president sees top 3 privately, then acks", () => 
 });
 
 test("investigate (7p, F2): result private to president, once-per-game cap, Hitler reads as Fascist", () => {
-  let s = startGame(mkPlayers(7), {}, lcg(13));
+  let s = startGame(mkPlayers(7), lcg(13));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, LIBERAL, FASCIST, FASCIST, HITLER]);
   s.president = "p0"; s.presidentIdx = 0;
   s.fascistPolicies = 1;
@@ -331,7 +334,7 @@ test("investigate (7p, F2): result private to president, once-per-game cap, Hitl
 });
 
 test("special election (7p, F3): president picks next president, rotation resumes after", () => {
-  let s = startGame(mkPlayers(7), {}, lcg(14));
+  let s = startGame(mkPlayers(7), lcg(14));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, LIBERAL, FASCIST, FASCIST, HITLER]);
   s.president = "p0"; s.presidentIdx = 0;
   s.fascistPolicies = 2;
@@ -350,7 +353,7 @@ test("special election (7p, F3): president picks next president, rotation resume
 });
 
 test("execution: target out, can't vote/nominate; executing Hitler → liberals win", () => {
-  let s = startGame(mkPlayers(7), {}, lcg(15));
+  let s = startGame(mkPlayers(7), lcg(15));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, LIBERAL, FASCIST, FASCIST, HITLER]);
   s.president = "p0"; s.presidentIdx = 0;
   s.fascistPolicies = 3;
@@ -373,7 +376,7 @@ test("execution: target out, can't vote/nominate; executing Hitler → liberals 
 
 // ── Veto ─────────────────────────────────────────────────────────────────────
 test("veto: locked before 5 fascist policies; agreed discards both & advances tracker", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(16));
+  let s = startGame(mkPlayers(5), lcg(16));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s = withRng(s, lcg(50));
   s.president = "p0"; s.presidentIdx = 0;
@@ -389,10 +392,31 @@ test("veto: locked before 5 fascist policies; agreed discards both & advances tr
   s = ok(respondVeto(s, "p0", true));
   assert.strictEqual(s.electionTracker, trackerBefore + 1, "agreed veto advances tracker");
   assert.strictEqual(s.phase, "nomination", "government ends");
+  assert.strictEqual(s.president, "p1", "agreed veto rotates presidency exactly once");
+});
+
+test("veto agreed at tracker 3 → chaos enact, presidency rotates exactly once", () => {
+  let s = startGame(mkPlayers(5), lcg(24));
+  withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
+  s.president = "p0"; s.presidentIdx = 0;
+  s.fascistPolicies = 5;
+  s.electionTracker = 2;
+  s.deck = [LIBERAL, LIBERAL, LIBERAL, LIBERAL, FASCIST, FASCIST, LIBERAL];
+  s = electGov(s, "p0", "p1");
+  s = ok(presidentDiscard(s, "p0", 0));
+  // A passed election resets the tracker, so stage 2 directly for the veto bump.
+  s.electionTracker = 2;
+  s = ok(proposeVeto(s, "p1"));
+  s = ok(respondVeto(s, "p0", true));
+  // Tracker hit 3 → top policy auto-enacted (LIBERAL), tracker reset.
+  assert.strictEqual(s.liberalPolicies, 1, "chaos enacted the top liberal policy");
+  assert.strictEqual(s.electionTracker, 0, "tracker reset");
+  assert.strictEqual(s.phase, "nomination", "no power triggered by chaos enact");
+  assert.strictEqual(s.president, "p1", "veto-chaos rotates presidency exactly once");
 });
 
 test("veto rejected → chancellor must enact", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(17));
+  let s = startGame(mkPlayers(5), lcg(17));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s.president = "p0"; s.presidentIdx = 0;
   s.fascistPolicies = 5;
@@ -402,13 +426,14 @@ test("veto rejected → chancellor must enact", () => {
   s = ok(proposeVeto(s, "p1"));
   s = ok(respondVeto(s, "p0", false));
   assert.strictEqual(s.phase, "legislative_chancellor", "back to chancellor");
-  // After a rejected veto the chancellor MUST enact one of the two cards.
+  // A refused veto cannot be re-proposed — the Chancellor must enact.
+  fails(proposeVeto(s, "p1"), "refused");
   s = ok(chancellorEnact(s, "p1", 0));
   assert.ok(s.fascistPolicies + s.liberalPolicies >= 6 || s.phase, "enacted");
 });
 
 test("veto blocked before unlock", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(18));
+  let s = startGame(mkPlayers(5), lcg(18));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s.president = "p0"; s.presidentIdx = 0;
   s.fascistPolicies = 4;
@@ -420,7 +445,7 @@ test("veto blocked before unlock", () => {
 
 // ── Win conditions ───────────────────────────────────────────────────────────
 test("liberal win: 5 liberal policies", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(19));
+  let s = startGame(mkPlayers(5), lcg(19));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s.liberalPolicies = 4;
   s.president = "p0"; s.presidentIdx = 0;
@@ -433,7 +458,7 @@ test("liberal win: 5 liberal policies", () => {
 });
 
 test("fascist win: 6 fascist policies", () => {
-  let s = startGame(mkPlayers(5), {}, lcg(20));
+  let s = startGame(mkPlayers(5), lcg(20));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, FASCIST, HITLER]);
   s.fascistPolicies = 5;
   s.president = "p0"; s.presidentIdx = 0;
@@ -446,7 +471,7 @@ test("fascist win: 6 fascist policies", () => {
 });
 
 test("fascist win: Hitler elected chancellor after 3+ fascist policies", () => {
-  let s = startGame(mkPlayers(7), {}, lcg(21));
+  let s = startGame(mkPlayers(7), lcg(21));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, LIBERAL, FASCIST, FASCIST, HITLER]);
   s.fascistPolicies = 3;
   s.president = "p0"; s.presidentIdx = 0;
@@ -456,7 +481,7 @@ test("fascist win: Hitler elected chancellor after 3+ fascist policies", () => {
 });
 
 test("Hitler chancellor with <3 fascist policies does NOT win", () => {
-  let s = startGame(mkPlayers(7), {}, lcg(22));
+  let s = startGame(mkPlayers(7), lcg(22));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, LIBERAL, FASCIST, FASCIST, HITLER]);
   s.fascistPolicies = 2;
   s.president = "p0"; s.presidentIdx = 0;
@@ -473,7 +498,7 @@ test("liberal win: Hitler executed (covered) + party mapping", () => {
 
 // ── Presidency rotation skips dead players ───────────────────────────────────
 test("presidency rotation skips executed players", () => {
-  let s = startGame(mkPlayers(7), {}, lcg(23));
+  let s = startGame(mkPlayers(7), lcg(23));
   withRoles(s, [LIBERAL, LIBERAL, LIBERAL, LIBERAL, FASCIST, FASCIST, HITLER]);
   s.president = "p0"; s.presidentIdx = 0;
   s.alive["p1"] = false; // p1 dead
